@@ -36,109 +36,135 @@ actor Memory {
     memoriesEntries := [];
   };
 
+  // ─── Writes ────────────────────────────────────────────────────────
+
   // Store a memory record.
-  // user_id is always the authenticated caller — the request body cannot override it.
-  // In ICP live mode this is cryptographically enforced: msg.caller is derived from
-  // the browser-generated Ed25519 key (or Internet Identity), never trusted from
-  // an unverified field in the request body.
+  // user_id is always msg.caller — the request body cannot override it.
+  // memory_type defaults to #Public if absent.
   public shared(msg) func store_memory(req : Types.StoreRequest) : async Text {
-    let caller = Principal.toText(msg.caller);
-    let id     = caller # ":" # Nat.toText(nextId);
+    let caller  = Principal.toText(msg.caller);
+    let id      = caller # ":" # Nat.toText(nextId);
     nextId += 1;
 
+    let memType = switch (req.memory_type) {
+      case (?t) { t };
+      case null { #Public };
+    };
+
     let record : Types.MemoryRecord = {
-      user_id    = caller;
-      session_id = req.session_id;
-      content    = req.content;
-      timestamp  = Time.now();
-      metadata   = req.metadata;
+      user_id     = caller;
+      session_id  = req.session_id;
+      content     = req.content;
+      timestamp   = Time.now();
+      metadata    = req.metadata;
+      memory_type = memType;
     };
 
     memories.put(id, record);
     id
   };
 
-  // Get all memories for a user, newest first
-  public query func get_memories(user_id : Text) : async [Types.MemoryResponse] {
+  // Delete a record — only the owning principal may delete it.
+  public shared(msg) func delete_memory(id : Text) : async Bool {
+    let caller = Principal.toText(msg.caller);
+    switch (memories.get(id)) {
+      case (?record) {
+        if (record.user_id != caller) { return false };
+        ignore memories.remove(id);
+        true
+      };
+      case null { false };
+    }
+  };
+
+  // ─── Reads ─────────────────────────────────────────────────────────
+
+  // Get memories for a user.
+  // Access rules:
+  //   Public    — visible to any caller (the agent/adapter reads this way)
+  //   Private   — visible only to the record owner (msg.caller == user_id)
+  //   Sensitive — same as Private
+  //
+  // This means the LLM/Laravel can only recall Public memories.
+  // Private and Sensitive records are for the user to read directly.
+  public shared query(msg) func get_memories(user_id : Text) : async [Types.MemoryResponse] {
+    let caller   = Principal.toText(msg.caller);
+    let isOwner  = caller == user_id;
     let buf = Buffer.Buffer<Types.MemoryResponse>(10);
 
     for ((id, record) in memories.entries()) {
       if (record.user_id == user_id) {
-        buf.add(toResponse(id, record));
+        let visible = switch (record.memory_type) {
+          case (#Public)    { true    };
+          case (#Private)   { isOwner };
+          case (#Sensitive) { isOwner };
+        };
+        if (visible) { buf.add(toResponse(id, record)) };
       };
     };
 
-    let arr = Buffer.toArray(buf);
-    Array.sort(arr, func(a : Types.MemoryResponse, b : Types.MemoryResponse) : { #less; #equal; #greater } {
-      Int.compare(b.timestamp, a.timestamp)
-    })
+    Array.sort(Buffer.toArray(buf), byTimestampDesc)
   };
 
-  // Get memories for a specific session, newest first
-  public query func get_memories_by_session(session_id : Text) : async [Types.MemoryResponse] {
-    let buf = Buffer.Buffer<Types.MemoryResponse>(10);
+  // Get memories for a specific session (owner only for private/sensitive).
+  public shared query(msg) func get_memories_by_session(session_id : Text) : async [Types.MemoryResponse] {
+    let caller = Principal.toText(msg.caller);
+    let buf    = Buffer.Buffer<Types.MemoryResponse>(10);
 
     for ((id, record) in memories.entries()) {
       if (record.session_id == session_id) {
-        buf.add(toResponse(id, record));
+        let visible = switch (record.memory_type) {
+          case (#Public)    { true             };
+          case (#Private)   { caller == record.user_id };
+          case (#Sensitive) { caller == record.user_id };
+        };
+        if (visible) { buf.add(toResponse(id, record)) };
       };
     };
 
-    let arr = Buffer.toArray(buf);
-    Array.sort(arr, func(a : Types.MemoryResponse, b : Types.MemoryResponse) : { #less; #equal; #greater } {
-      Int.compare(b.timestamp, a.timestamp)
-    })
+    Array.sort(Buffer.toArray(buf), byTimestampDesc)
   };
 
-  // List the most recent N memories across all users, newest first
+  // List recent memories across all users — Public only.
+  // Private and Sensitive records are never included in the global listing.
   public query func list_recent_memories(limit : Nat) : async [Types.MemoryResponse] {
     let buf = Buffer.Buffer<Types.MemoryResponse>(100);
 
     for ((id, record) in memories.entries()) {
-      buf.add(toResponse(id, record));
+      switch (record.memory_type) {
+        case (#Public) { buf.add(toResponse(id, record)) };
+        case _         { };
+      };
     };
 
-    // Sort all by timestamp descending, then take limit
-    let sorted = Array.sort(Buffer.toArray(buf), func(a : Types.MemoryResponse, b : Types.MemoryResponse) : { #less; #equal; #greater } {
-      Int.compare(b.timestamp, a.timestamp)
-    });
-
+    let sorted = Array.sort(Buffer.toArray(buf), byTimestampDesc);
     if (sorted.size() <= limit) sorted
     else Array.tabulate(limit, func(i : Nat) : Types.MemoryResponse { sorted[i] })
   };
 
-  // Delete a specific memory record
-  public func delete_memory(id : Text) : async Bool {
-    switch (memories.remove(id)) {
-      case (?_) true;
-      case null  false;
-    }
-  };
-
-  // Health / record count
+  // Health / record count (total, including private)
   public query func health() : async { status : Text; count : Nat } {
     { status = "ok"; count = memories.size() }
   };
 
   // ─── HTTP gateway ──────────────────────────────────────────────────
   //
-  // Serves memory as JSON at:
-  //   /memory/<user_id>  — records for that user, newest first
-  //   /memory            — health + record count
-  //   /                  — same as /memory
+  // The HTTP endpoint only serves Public records — the gateway has no
+  // authenticated caller context, so private/sensitive records are omitted.
+  //
+  //   /memory/<user_id>  — public records for that user, newest first
+  //   /memory            — health + public record count
   //
   // Accessible at:  https://<canister-id>.ic0.app/memory/<user_id>
-  // Locally:        http://localhost:4943/?canisterId=<id>&path=/memory/<user_id>
+  // Locally:        http://localhost:4943/memory/<user_id>?canisterId=<id>
   //
   public query func http_request(req : Types.HttpRequest) : async Types.HttpResponse {
-    // Strip query string from URL so routing works regardless of params.
     let urlIter = Text.split(req.url, #char '?');
     let path : Text = switch (urlIter.next()) {
       case (?p) p;
       case null req.url;
     };
 
-    // Route: /memory/<user_id>
     switch (Text.stripStart(path, #text "/memory/")) {
       case (?userId) {
         if (Text.size(userId) == 0) {
@@ -148,24 +174,25 @@ actor Memory {
         let buf = Buffer.Buffer<Types.MemoryResponse>(10);
         for ((id, record) in memories.entries()) {
           if (record.user_id == userId) {
-            buf.add(toResponse(id, record));
+            switch (record.memory_type) {
+              case (#Public) { buf.add(toResponse(id, record)) };
+              case _         { }; // Private and Sensitive not served over HTTP
+            };
           };
         };
 
-        let sorted = Array.sort(
-          Buffer.toArray(buf),
-          func(a : Types.MemoryResponse, b : Types.MemoryResponse) : { #less; #equal; #greater } {
-            Int.compare(b.timestamp, a.timestamp)
-          }
-        );
-
+        let sorted = Array.sort(Buffer.toArray(buf), byTimestampDesc);
         httpJson(200, jsonArray(sorted))
       };
 
-      // Route: /memory  or  /
       case null {
+        let publicCount = Iter.size(
+          Iter.filter(memories.vals(), func(r : Types.MemoryRecord) : Bool {
+            switch (r.memory_type) { case (#Public) true; case _ false }
+          })
+        );
         if (path == "/memory" or path == "/" or path == "") {
-          httpJson(200, "{\"status\":\"ok\",\"count\":" # Nat.toText(memories.size()) # "}")
+          httpJson(200, "{\"status\":\"ok\",\"public_count\":" # Nat.toText(publicCount) # ",\"total_count\":" # Nat.toText(memories.size()) # "}")
         } else {
           httpJson(404, "{\"error\":\"Not found. Try /memory/<user_id>\"}")
         }
@@ -174,14 +201,28 @@ actor Memory {
   };
 
   // ─── Private helpers ───────────────────────────────────────────────
+
+  private func byTimestampDesc(a : Types.MemoryResponse, b : Types.MemoryResponse) : { #less; #equal; #greater } {
+    Int.compare(b.timestamp, a.timestamp)
+  };
+
+  private func memTypeText(t : Types.MemoryType) : Text {
+    switch t {
+      case (#Public)    { "public"    };
+      case (#Private)   { "private"   };
+      case (#Sensitive) { "sensitive" };
+    }
+  };
+
   private func toResponse(id : Text, r : Types.MemoryRecord) : Types.MemoryResponse {
     {
-      id         = id;
-      user_id    = r.user_id;
-      session_id = r.session_id;
-      content    = r.content;
-      timestamp  = r.timestamp;
-      metadata   = r.metadata;
+      id          = id;
+      user_id     = r.user_id;
+      session_id  = r.session_id;
+      content     = r.content;
+      timestamp   = r.timestamp;
+      metadata    = r.metadata;
+      memory_type = r.memory_type;
     }
   };
 
@@ -213,21 +254,22 @@ actor Memory {
 
   private func jsonRecord(r : Types.MemoryResponse) : Text {
     let meta = switch (r.metadata) {
-      case null    { "null" };
-      case (?m)    { "\"" # jsonEscape(m) # "\"" };
+      case null  { "null" };
+      case (?m)  { "\"" # jsonEscape(m) # "\"" };
     };
     "{" #
-      "\"id\":\""         # jsonEscape(r.id)         # "\"," #
-      "\"user_id\":\""    # jsonEscape(r.user_id)    # "\"," #
-      "\"session_id\":\"" # jsonEscape(r.session_id) # "\"," #
-      "\"content\":\""    # jsonEscape(r.content)    # "\"," #
-      "\"timestamp\":"    # Int.toText(r.timestamp)  # ","   #
-      "\"metadata\":"     # meta                              #
+      "\"id\":\""          # jsonEscape(r.id)              # "\"," #
+      "\"user_id\":\""     # jsonEscape(r.user_id)         # "\"," #
+      "\"session_id\":\""  # jsonEscape(r.session_id)      # "\"," #
+      "\"content\":\""     # jsonEscape(r.content)         # "\"," #
+      "\"timestamp\":"     # Int.toText(r.timestamp)       # ","   #
+      "\"metadata\":"      # meta                          # ","   #
+      "\"memory_type\":\"" # memTypeText(r.memory_type)    # "\""  #
     "}"
   };
 
   private func jsonArray(records : [Types.MemoryResponse]) : Text {
-    var body = "[";
+    var body  = "[";
     var first = true;
     for (r in records.vals()) {
       if (not first) { body #= "," };

@@ -37,20 +37,28 @@ const mockStore = [];
 // The adapter's /store endpoint is only meaningful in mock mode.
 //
 const idlFactory = ({ IDL }) => {
+  const MemoryType = IDL.Variant({
+    Public:    IDL.Null,
+    Private:   IDL.Null,
+    Sensitive: IDL.Null,
+  });
+
   // user_id is absent — the canister derives it from msg.caller.
   const StoreRequest = IDL.Record({
-    session_id: IDL.Text,
-    content:    IDL.Text,
-    metadata:   IDL.Opt(IDL.Text),
+    session_id:  IDL.Text,
+    content:     IDL.Text,
+    metadata:    IDL.Opt(IDL.Text),
+    memory_type: IDL.Opt(MemoryType),
   });
 
   const MemoryResponse = IDL.Record({
-    id:         IDL.Text,
-    user_id:    IDL.Text,
-    session_id: IDL.Text,
-    content:    IDL.Text,
-    timestamp:  IDL.Int,
-    metadata:   IDL.Opt(IDL.Text),
+    id:          IDL.Text,
+    user_id:     IDL.Text,
+    session_id:  IDL.Text,
+    content:     IDL.Text,
+    timestamp:   IDL.Int,
+    metadata:    IDL.Opt(IDL.Text),
+    memory_type: MemoryType,
   });
 
   return IDL.Service({
@@ -78,11 +86,16 @@ async function getActor() {
 // In live mode, the browser writes directly to the canister (browser-signed via @dfinity/agent).
 // The user_id field here is the browser-derived principal, not a server-generated ID.
 app.post('/store', async (req, res) => {
-  const { user_id, session_id, content, metadata } = req.body;
+  const { user_id, session_id, content, metadata, memory_type } = req.body;
 
   if (MOCK_MODE) {
     const id = `${user_id}:${Date.now()}`;
-    mockStore.push({ id, user_id, session_id, content, timestamp: Date.now(), metadata: metadata || null });
+    mockStore.push({
+      id, user_id, session_id, content,
+      timestamp:   Date.now(),
+      metadata:    metadata || null,
+      memory_type: memory_type || 'public',
+    });
     return res.json({ id });
   }
 
@@ -171,13 +184,16 @@ app.get('/health', async (req, res) => {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 function formatRecord(r) {
+  // memory_type is a Candid variant: { Public: null } | { Private: null } | { Sensitive: null }
+  const memType = r.memory_type ? Object.keys(r.memory_type)[0].toLowerCase() : 'public';
   return {
-    id:         r.id,
-    user_id:    r.user_id,
-    session_id: r.session_id,
-    content:    r.content,
-    timestamp:  Number(r.timestamp),
-    metadata:   r.metadata?.[0] ?? null,
+    id:          r.id,
+    user_id:     r.user_id,
+    session_id:  r.session_id,
+    content:     r.content,
+    timestamp:   Number(r.timestamp),
+    metadata:    r.metadata?.[0] ?? null,
+    memory_type: memType,
   };
 }
 
