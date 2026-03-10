@@ -78,9 +78,10 @@
       </div>
 
       <!-- Stats row -->
-      <div class="grid grid-cols-3 gap-4">
+      <div class="grid grid-cols-4 gap-4">
         <StatCard label="Total Memories" :value="memories.length" />
-        <StatCard label="Unique Identities" :value="uniqueUsers" />
+        <StatCard label="Public" :value="countByType('public')" />
+        <StatCard label="Private" :value="countByType('private')" />
         <StatCard label="Storage Layer" :value="isMock ? 'Mock (cache)' : 'ICP Canister'" :highlight="!isMock" />
       </div>
 
@@ -111,11 +112,14 @@
           >
             <div class="flex items-start justify-between gap-4">
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 mb-1.5">
+                <div class="flex items-center gap-2 mb-1.5 flex-wrap">
                   <span class="text-xs font-mono text-sky-400/80 truncate">{{ memory.user_id }}</span>
                   <span class="text-gray-700">·</span>
                   <span class="text-xs text-gray-500 font-mono">
                     session: {{ memory.session_id?.slice(0, 8) }}…
+                  </span>
+                  <span :class="memoryTypeBadge(memory.memory_type)" class="text-xs px-1.5 py-0.5 rounded font-mono border">
+                    {{ memory.memory_type || 'public' }}
                   </span>
                 </div>
                 <p class="text-sm text-gray-200 leading-snug">{{ memory.content }}</p>
@@ -171,6 +175,39 @@
           {{ isMock ? 'Memory layer: mock (dashed = not connected)' : 'Normal app stack → decentralized memory layer' }}
         </p>
       </div>
+
+      <!-- MCP Server config -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <button
+          @click="showMcpConfig = !showMcpConfig"
+          class="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-gray-800/40 transition-colors"
+        >
+          <div>
+            <h3 class="text-sm font-medium text-gray-300">Connect via MCP</h3>
+            <p class="text-xs text-gray-500 mt-0.5">
+              Expose your canister memory to Claude Desktop or any MCP-compatible agent.
+            </p>
+          </div>
+          <svg
+            class="w-4 h-4 text-gray-500 transition-transform"
+            :class="{ 'rotate-180': showMcpConfig }"
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        <div v-if="showMcpConfig" class="px-6 pb-6 space-y-3 border-t border-gray-800">
+          <p class="text-xs text-gray-500 pt-4">
+            Add this to <code class="bg-gray-800 px-1 rounded">~/.claude/claude_desktop_config.json</code>
+            to let Claude read your public memories from the canister:
+          </p>
+          <pre class="text-xs bg-gray-950 border border-gray-800 rounded-lg p-4 overflow-x-auto text-gray-300 leading-relaxed">{{ mcpConfig }}</pre>
+          <p class="text-xs text-gray-600">
+            Only <span class="text-sky-400">Public</span> memories are exposed via MCP.
+            Private and Sensitive records remain on-chain and owner-gated.
+          </p>
+        </div>
+      </div>
     </div>
   </AppLayout>
 </template>
@@ -193,10 +230,37 @@ const memories = ref(props.memories ?? []);
 const refreshing = ref(false);
 const status = ref({ healthy: null, canister_id: '', count: null, error: null });
 const statusLoading = ref(false);
+const showMcpConfig = ref(false);
 
 const isMock = computed(() => props.icp_mode !== 'icp');
 const canisterId = computed(() => props.canister_id || '');
 const uniqueUsers = computed(() => new Set(memories.value.map(m => m.user_id)).size);
+
+const mcpConfig = computed(() => {
+  const cid = canisterId.value || '<your-canister-id>';
+  return JSON.stringify({
+    mcpServers: {
+      openMemory: {
+        command: 'node',
+        args: ['/absolute/path/to/icp/mcp-server/server.js'],
+        env: {
+          ICP_CANISTER_ID: cid,
+          ICP_HOST: 'https://ic0.app',
+        },
+      },
+    },
+  }, null, 2);
+});
+
+function countByType(type) {
+  return memories.value.filter(m => (m.memory_type || 'public') === type).length;
+}
+
+function memoryTypeBadge(type) {
+  if (type === 'sensitive') return 'bg-red-950/60 border-red-800/50 text-red-400';
+  if (type === 'private')   return 'bg-violet-950/60 border-violet-800/50 text-violet-400';
+  return 'bg-sky-950/60 border-sky-800/50 text-sky-400';
+}
 
 async function refresh() {
   refreshing.value = true;
