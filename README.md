@@ -20,16 +20,18 @@ OpenMemoryAgent demonstrates a different split:
 ### What this demo proves
 
 - **Identity is browser-generated**: an Ed25519 key pair is created in the browser on first load and persisted in `localStorage`. The server never generates or stores the private key.
-- **Writes are browser-signed (live ICP mode)**: after the server extracts a memory summary, it returns it to the browser. The browser signs and stores it in the canister using the user's identity — `msg.caller` on the canister is the user's principal, not a value the server supplied.
-- **The canister enforces ownership**: `store_memory` is `public shared(msg) func` — `user_id` is always `msg.caller`, never trusted from the request body. The server cannot write under the user's principal.
+- **Writes are browser-signed in live ICP mode**: after the server extracts a memory summary, it returns it to the browser. The browser signs and stores it in the canister — `msg.caller` on the canister is the user's Ed25519 principal, not a value the server supplied.
+- **The canister enforces insert ownership**: `store_memory` and `delete_memory` are both `public shared(msg) func` — records are keyed to `msg.caller` and only the owning principal can delete them. The server cannot write or delete under the user's principal.
 - **Memory lives outside the app**: records are externally readable at `https://<canister-id>.ic0.app/memory/<principal>` with no dependency on the Laravel server.
 - **Memory persists across session resets**: the browser key survives chat resets because it lives in `localStorage`, not the server session.
 
-### Current limitations
+### What this demo does not prove
 
-- **`localStorage` is single-device**: the Ed25519 key only persists on the browser that generated it. Upgrading to Internet Identity would give multi-device portability — the architecture is otherwise identical.
-- **Mock mode writes are server-side**: when `ICP_MOCK_MODE=true` (no canister), the server writes to the file cache using the browser-derived principal. Principal authenticity is not cryptographically enforced in mock mode.
-- **Reads are always server-mediated**: the server fetches memory via the adapter to inject it into the system prompt. Direct browser reads are possible but not implemented.
+- **User-controlled memory content**: the server (LLM + summarizer) still decides what text gets stored. The browser signs the write, but does not review or choose the summary. This is blind signing of server-generated content.
+- **Strong key custody**: `localStorage` is readable by any same-origin JavaScript. An operator-controlled frontend could exfiltrate the key. True user custody requires a hardware key, WebAuthn, or Internet Identity.
+- **Privacy of memory records**: the canister HTTP endpoint is public — anyone who knows a principal can read its memory. There is no encryption or access control on reads.
+- **Multi-device portability**: the Ed25519 key lives in one browser's `localStorage`. Clearing it generates a new identity. The UI warns when this creates a mismatch between the browser key and the session-bound principal.
+- **Host-independent recall**: the agent reads memories through Laravel + the Node adapter, not directly from the canister. The server still orchestrates all recall.
 
 ---
 
@@ -202,7 +204,9 @@ Example response:
 
 `user_id` is an ICP principal derived from the browser's Ed25519 key — not a server-assigned ID. The canister enforces this: `msg.caller` on `store_memory()` becomes `user_id`; the request body has no `user_id` field.
 
-This is the concrete proof that memory lives outside the app: the URL works from any browser, any terminal, any app — with no dependency on the Laravel server. In the Memory Inspector (live mode), each record shows a clickable link directly to its canister URL.
+This demonstrates that memory lives outside the app's database: the URL works from any browser, any terminal, with no dependency on the Laravel server. In the Memory Inspector (live mode), each record shows a clickable link to its canister URL.
+
+**Note on privacy**: reads are public and unauthenticated. Anyone who knows a principal can read its memory records. There is no encryption. Do not store sensitive information in the current demo.
 
 Locally with dfx, use:
 ```bash
@@ -246,7 +250,7 @@ curl "http://localhost:4943/memory/<user_id>?canisterId=<canister-id>"
 > The agent retrieves the memory and responds with context.
 
 ### The point to make
-> "That write was signed in the browser. The server returned the summary and got out of the way — it couldn't have written that record under my principal even if it tried. The memory is mine, not the app's."
+> "The server produced the summary and the browser signed the write. The canister verified the caller's identity — the server couldn't have stored that under my principal directly. The question this opens up is: what happens when the user, not the app, controls that signing step?"
 
 ---
 
