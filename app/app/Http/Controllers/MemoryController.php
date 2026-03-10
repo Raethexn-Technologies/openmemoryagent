@@ -40,4 +40,13 @@ class MemoryController extends Controller
             'canister_id' => $this->icp->canisterId(),
         ]);
     }
+
+    /**
+     * Live health status — adapter reachability + canister record count.
+     * Drives "Connected to ICP Canister" claims with real proof, not just config.
+     */
+    public function status(Request $request)
+    {
+        return response()->json($this->icp->healthCheck());
+    }
 }

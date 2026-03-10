@@ -36,31 +36,45 @@
         </div>
       </div>
 
-      <!-- Status bar — shows proof of what's actually connected -->
+      <!-- Status bar — proof-backed, not just config-backed -->
       <div :class="[
         'rounded-xl p-4 flex gap-3 border',
         isMock
           ? 'bg-amber-950/30 border-amber-800/30'
-          : 'bg-sky-950/40 border-sky-800/30'
+          : status.healthy
+            ? 'bg-emerald-950/30 border-emerald-800/30'
+            : 'bg-red-950/30 border-red-800/30'
       ]">
-        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" :class="isMock ? 'text-amber-400' : 'text-sky-400'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" :class="isMock ? 'text-amber-400' : status.healthy ? 'text-emerald-400' : 'text-red-400'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <div class="text-sm">
-          <p class="font-medium" :class="isMock ? 'text-amber-300' : 'text-sky-300'">
-            {{ isMock ? 'Running in mock mode' : 'Connected to ICP Canister' }}
+        <div class="text-sm flex-1">
+          <p class="font-medium" :class="isMock ? 'text-amber-300' : status.healthy ? 'text-emerald-300' : 'text-red-300'">
+            <template v-if="isMock">Running in mock mode</template>
+            <template v-else-if="status.healthy">Adapter reachable · ICP canister connected</template>
+            <template v-else-if="statusLoading">Checking adapter…</template>
+            <template v-else>Adapter unreachable — check icp/adapter is running</template>
           </p>
-          <p class="mt-0.5" :class="isMock ? 'text-amber-400/70' : 'text-sky-400/70'">
+          <p class="mt-0.5 text-xs font-mono" :class="isMock ? 'text-amber-500/70' : status.healthy ? 'text-emerald-500/70' : 'text-red-500/70'">
             <template v-if="isMock">
-              Memories are stored in the app's file cache. To connect a real ICP canister, see the README.
+              Storage: file cache · To connect ICP, see README → "Connecting to a Real Canister"
             </template>
             <template v-else>
-              Memories are stored in canister
-              <code class="font-mono text-emerald-400">{{ canisterId || '—' }}</code>.
-              The AI's memory is not owned by this server.
+              Canister: {{ status.canister_id || '—' }}
+              <span v-if="status.count !== null"> · {{ status.count }} records</span>
+              <span v-if="status.error"> · {{ status.error }}</span>
             </template>
           </p>
         </div>
+        <!-- Live check button -->
+        <button
+          v-if="!isMock"
+          @click="checkStatus"
+          :disabled="statusLoading"
+          class="text-xs text-gray-500 hover:text-gray-300 border border-gray-700 hover:border-gray-600 px-2 py-1 rounded transition-colors self-start flex-shrink-0"
+        >
+          {{ statusLoading ? '…' : 'Check' }}
+        </button>
       </div>
 
       <!-- Stats row -->
@@ -162,6 +176,8 @@ const props = defineProps({
 
 const memories = ref(props.memories ?? []);
 const refreshing = ref(false);
+const status = ref({ healthy: null, canister_id: '', count: null, error: null });
+const statusLoading = ref(false);
 
 const isMock = computed(() => props.icp_mode !== 'icp');
 const canisterId = computed(() => props.canister_id || '');
@@ -171,13 +187,26 @@ async function refresh() {
   refreshing.value = true;
   try {
     const { data } = await axios.get('/memory/refresh');
-    if (data.memories) {
-      memories.value = data.memories;
-    }
+    if (data.memories) memories.value = data.memories;
   } finally {
     refreshing.value = false;
   }
 }
+
+async function checkStatus() {
+  statusLoading.value = true;
+  try {
+    const { data } = await axios.get('/api/status');
+    status.value = data;
+  } catch {
+    status.value = { healthy: false, canister_id: '', count: null, error: 'Request failed' };
+  } finally {
+    statusLoading.value = false;
+  }
+}
+
+// Auto-check on load when in live mode
+if (props.icp_mode === 'icp') checkStatus();
 
 function formatTime(ts) {
   if (!ts) return '—';

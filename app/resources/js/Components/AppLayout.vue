@@ -22,10 +22,19 @@
           <NavLink href="/memory" :active="$page.url.startsWith('/memory')">Memory Inspector</NavLink>
         </div>
 
-        <!-- Status badge -->
-        <div class="flex items-center gap-2 text-xs text-gray-500">
-          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span>ICP Memory Layer</span>
+        <!-- Global mode badge — honest about what's connected -->
+        <div class="flex items-center gap-2">
+          <span
+            :class="[
+              'flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-mono',
+              isMock
+                ? 'bg-amber-950/60 border-amber-800/50 text-amber-400'
+                : 'bg-emerald-950/60 border-emerald-800/50 text-emerald-400'
+            ]"
+          >
+            <span class="w-1.5 h-1.5 rounded-full" :class="isMock ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'"></span>
+            {{ isMock ? 'Mock memory' : 'ICP Live' }}
+          </span>
         </div>
       </div>
     </nav>
@@ -38,6 +47,10 @@
 </template>
 
 <script setup>
+import { computed } from 'vue';
 import { usePage } from '@inertiajs/vue3';
 import NavLink from './NavLink.vue';
+
+const page = usePage();
+const isMock = computed(() => page.props.icp?.mode !== 'icp');
 </script>

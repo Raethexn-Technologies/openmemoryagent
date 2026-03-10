@@ -120,6 +120,46 @@ class IcpMemoryService
         return config('services.icp.canister_id', '');
     }
 
+    /**
+     * Ping the adapter for live status.
+     * Returns structured health info suitable for the /api/status endpoint.
+     */
+    public function healthCheck(): array
+    {
+        if ($this->isMockMode()) {
+            $count = count(cache()->get('mock_icp_recent', []));
+            return [
+                'mode'        => 'mock',
+                'adapter'     => 'n/a',
+                'canister_id' => '',
+                'count'       => $count,
+                'healthy'     => true,
+            ];
+        }
+
+        try {
+            $response = Http::timeout(3)->get("{$this->baseUrl}/health");
+            $data     = $response->json();
+
+            return [
+                'mode'        => 'icp',
+                'adapter'     => $response->successful() ? 'reachable' : 'error',
+                'canister_id' => $this->canisterId(),
+                'count'       => $data['count'] ?? null,
+                'healthy'     => $response->successful(),
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'mode'        => 'icp',
+                'adapter'     => 'unreachable',
+                'canister_id' => $this->canisterId(),
+                'count'       => null,
+                'healthy'     => false,
+                'error'       => $e->getMessage(),
+            ];
+        }
+    }
+
     private function isMockMode(): bool
     {
         return config('services.icp.mock', true);

@@ -15,3 +15,6 @@ Route::post('/chat/reset', [ChatController::class, 'reset'])->name('chat.reset')
 // Memory inspector
 Route::get('/memory', [MemoryController::class, 'index'])->name('memory.index');
 Route::get('/memory/refresh', [MemoryController::class, 'refresh'])->name('memory.refresh');
+
+// Status API — returns real adapter/canister health for the UI
+Route::get('/api/status', [MemoryController::class, 'status'])->name('api.status');
