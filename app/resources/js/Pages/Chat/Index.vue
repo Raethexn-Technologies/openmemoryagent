@@ -282,6 +282,10 @@
           <div v-if="myMemoriesLoading" class="px-4 py-3 text-xs text-gray-500">
             Fetching from canister…
           </div>
+          <!-- Error — never show as empty -->
+          <div v-else-if="myMemoriesError" class="px-4 py-3 text-xs text-red-400/80">
+            Could not load memories: {{ myMemoriesError }}
+          </div>
           <!-- Empty -->
           <div v-else-if="myMemories.length === 0" class="px-4 py-3 text-xs text-gray-600">
             No memories stored yet. Send a message to create some.
@@ -398,13 +402,21 @@ const icpMemory = computed(() =>
 const showMyMemories     = ref(false);
 const myMemories         = ref([]);
 const myMemoriesLoading  = ref(false);
+const myMemoriesError    = ref(null);  // string | null — distinct from "no records"
 
 async function toggleMyMemories() {
   showMyMemories.value = !showMyMemories.value;
   // Lazy-load on first open; refresh on subsequent opens to pick up new writes.
   if (showMyMemories.value) {
     myMemoriesLoading.value = true;
-    myMemories.value = await icpMemory.value.getMyMemories(principal);
+    myMemoriesError.value   = null;
+    const result = await icpMemory.value.getMyMemories(principal);
+    if (result.ok) {
+      myMemories.value = result.records;
+    } else {
+      myMemories.value      = [];
+      myMemoriesError.value = result.error;
+    }
     myMemoriesLoading.value = false;
   }
 }
@@ -422,8 +434,8 @@ const messagesEl = ref(null);
 //   { status: 'failed',  content }          — write failed
 const memoryState = ref(null);
 
-// pendingApproval holds a sensitive memory waiting for user review.
-// Sensitive memories are NOT auto-signed — the user explicitly approves or rejects.
+// pendingApproval holds a private or sensitive memory waiting for user review.
+// Private and Sensitive memories are NOT auto-signed — the user explicitly approves or rejects.
 // { content, type, metadata }
 const pendingApproval = ref(null);
 
@@ -450,7 +462,7 @@ function clearMemoryState(delay = 7000) {
 }
 
 // Sign and write a memory to the canister from the browser.
-// Called for auto-approved types (public, private) and after manual approval (sensitive).
+// Called for auto-signed public memories (live mode) and after manual approval (private/sensitive).
 async function writeMemoryToBrowser(content, type, metadata) {
   memoryState.value = { status: 'pending' };
   const id = await icpMemory.value.storeMemory({
@@ -463,7 +475,13 @@ async function writeMemoryToBrowser(content, type, metadata) {
     memoryState.value = { status: 'success', content, source: 'browser' };
     // Refresh the owner panel so the new record appears immediately.
     if (showMyMemories.value) {
-      myMemories.value = await icpMemory.value.getMyMemories(principal);
+      const result = await icpMemory.value.getMyMemories(principal);
+      if (result.ok) {
+        myMemories.value      = result.records;
+        myMemoriesError.value = null;
+      } else {
+        myMemoriesError.value = result.error;
+      }
     }
   } else {
     memoryState.value = { status: 'failed', content };

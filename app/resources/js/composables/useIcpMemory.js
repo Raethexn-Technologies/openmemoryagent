@@ -7,9 +7,11 @@
  *                equals the user's principal. Called after the server returns a memory summary
  *                and the user approves it (private/sensitive) or auto-signs it (public, live mode).
  *
- * getMyMemories — authenticated read; returns all records the owner can see (public + private +
- *                 sensitive). The canister enforces msg.caller == user_id before returning
- *                 non-public records. Anonymous callers (server adapter, MCP) only get public.
+ * getMyMemories — authenticated read; returns { ok: true, records: [...] } with all records
+ *                 the owner can see (public + private + sensitive), or { ok: false, error }
+ *                 on failure. Never collapses errors into an empty array.
+ *                 The canister enforces msg.caller == user_id before returning non-public records.
+ *                 Anonymous callers (server adapter, MCP) only get public.
  *
  * In mock mode the server handles writes; this composable is not used for public memories.
  * For approved private/sensitive memories in mock mode, the browser POSTs to /chat/store-memory.
@@ -72,7 +74,7 @@ export function useIcpMemory({ identity, canisterId, host }) {
     console.warn('[useIcpMemory] No canisterId — live reads/writes disabled.');
     return {
       storeMemory:   async () => null,
-      getMyMemories: async () => [],
+      getMyMemories: async () => ({ ok: true, records: [] }),
     };
   }
 
@@ -127,24 +129,27 @@ export function useIcpMemory({ identity, canisterId, host }) {
    * This is the distinction between owner-authenticated recall and agent recall.
    *
    * @param {string} principal  — the user's ICP principal (text form)
-   * @returns {Promise<Array>}  — normalised record array, empty on error
+   * @returns {Promise<{ ok: true, records: Array } | { ok: false, error: string }>}
    */
   async function getMyMemories(principal) {
     try {
       const actor = await getActor();
       const records = await actor.get_memories(principal);
-      return records.map((r) => ({
-        id:          r.id,
-        user_id:     r.user_id,
-        session_id:  r.session_id,
-        content:     r.content,
-        timestamp:   Number(r.timestamp),
-        metadata:    r.metadata?.[0] ?? null,
-        memory_type: fromMemoryTypeVariant(r.memory_type),
-      }));
+      return {
+        ok: true,
+        records: records.map((r) => ({
+          id:          r.id,
+          user_id:     r.user_id,
+          session_id:  r.session_id,
+          content:     r.content,
+          timestamp:   Number(r.timestamp),
+          metadata:    r.metadata?.[0] ?? null,
+          memory_type: fromMemoryTypeVariant(r.memory_type),
+        })),
+      };
     } catch (err) {
       console.error('[useIcpMemory] getMyMemories failed:', err);
-      return [];
+      return { ok: false, error: err.message ?? String(err) };
     }
   }
 
