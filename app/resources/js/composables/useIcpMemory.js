@@ -1,13 +1,18 @@
 /**
  * useIcpMemory
  *
- * Browser-side ICP actor for writing memory records directly to the canister.
- * Called after the server returns a memory_summary — the browser signs the write
- * with the user's Ed25519 identity so msg.caller on the canister equals the user's
- * principal. The server cannot write under this principal in live mode.
+ * Browser-side ICP actor for reading and writing memory records directly to the canister.
  *
- * Only used when icp.mode === 'icp' (live mode). In mock mode the server writes
- * to the file cache and this composable is not called.
+ * storeMemory  — signs a write with the user's Ed25519 identity; msg.caller on the canister
+ *                equals the user's principal. Called after the server returns a memory summary
+ *                and the user approves it (private/sensitive) or auto-signs it (public, live mode).
+ *
+ * getMyMemories — authenticated read; returns all records the owner can see (public + private +
+ *                 sensitive). The canister enforces msg.caller == user_id before returning
+ *                 non-public records. Anonymous callers (server adapter, MCP) only get public.
+ *
+ * In mock mode the server handles writes; this composable is not used for public memories.
+ * For approved private/sensitive memories in mock mode, the browser POSTs to /chat/store-memory.
  */
 
 import { HttpAgent, Actor } from '@dfinity/agent';
@@ -55,10 +60,20 @@ function toMemoryTypeVariant(type) {
   return { Public: null };
 }
 
+// Normalise a Candid MemoryType variant ({ Public: null } etc.) to a plain string.
+function fromMemoryTypeVariant(variant) {
+  if (!variant) return 'public';
+  const key = Object.keys(variant)[0];
+  return key ? key.toLowerCase() : 'public';
+}
+
 export function useIcpMemory({ identity, canisterId, host }) {
   if (!canisterId) {
-    console.warn('[useIcpMemory] No canisterId — live writes disabled.');
-    return { storeMemory: async () => null };
+    console.warn('[useIcpMemory] No canisterId — live reads/writes disabled.');
+    return {
+      storeMemory:   async () => null,
+      getMyMemories: async () => [],
+    };
   }
 
   async function getActor() {
@@ -80,15 +95,8 @@ export function useIcpMemory({ identity, canisterId, host }) {
    *
    * @param {object} params
    * @param {string} params.sessionId
-   * @param {string} params.content   — the memory summary text
-   * @param {string|null} params.metadata — optional JSON string
-   * @returns {Promise<string|null>} the stored record ID, or null on error
-   */
-  /**
-   * @param {object} params
-   * @param {string} params.sessionId
    * @param {string} params.content
-   * @param {string|null} params.metadata
+   * @param {string|null} params.metadata  — optional JSON string
    * @param {'public'|'private'|'sensitive'} [params.type='public']
    * @returns {Promise<string|null>} stored record ID or null on error
    */
@@ -108,5 +116,37 @@ export function useIcpMemory({ identity, canisterId, host }) {
     }
   }
 
-  return { storeMemory };
+  /**
+   * Read all memory records the owner can see (public + private + sensitive).
+   *
+   * This call is authenticated — the actor is created with the user's Ed25519 identity,
+   * so msg.caller on the canister equals the user's principal. The canister returns all
+   * records where user_id == msg.caller, including private and sensitive ones.
+   *
+   * Anonymous callers (server adapter, MCP server) only receive public records.
+   * This is the distinction between owner-authenticated recall and agent recall.
+   *
+   * @param {string} principal  — the user's ICP principal (text form)
+   * @returns {Promise<Array>}  — normalised record array, empty on error
+   */
+  async function getMyMemories(principal) {
+    try {
+      const actor = await getActor();
+      const records = await actor.get_memories(principal);
+      return records.map((r) => ({
+        id:          r.id,
+        user_id:     r.user_id,
+        session_id:  r.session_id,
+        content:     r.content,
+        timestamp:   Number(r.timestamp),
+        metadata:    r.metadata?.[0] ?? null,
+        memory_type: fromMemoryTypeVariant(r.memory_type),
+      }));
+    } catch (err) {
+      console.error('[useIcpMemory] getMyMemories failed:', err);
+      return [];
+    }
+  }
+
+  return { storeMemory, getMyMemories };
 }

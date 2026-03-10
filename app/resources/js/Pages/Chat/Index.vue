@@ -250,6 +250,68 @@
         </div>
       </transition>
 
+      <!-- My Memories — owner-authenticated read (live ICP mode only) -->
+      <!-- This call is signed by the browser's Ed25519 identity. The canister returns   -->
+      <!-- public + private + sensitive records because msg.caller == user_id.            -->
+      <!-- The LLM only ever sees public records. This panel shows the owner everything.  -->
+      <div v-if="icpMode === 'icp' && canisterId" class="border border-gray-800 rounded-xl overflow-hidden">
+        <button
+          @click="toggleMyMemories"
+          class="w-full px-4 py-2.5 flex items-center justify-between text-left hover:bg-gray-800/30 transition-colors"
+        >
+          <div class="flex items-center gap-2">
+            <svg class="w-3.5 h-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            <span class="text-xs font-medium text-gray-400">
+              My memories
+              <span v-if="myMemories.length" class="text-gray-600 font-normal ml-1">({{ myMemories.length }} · owner-authenticated)</span>
+            </span>
+          </div>
+          <svg
+            class="w-3.5 h-3.5 text-gray-600 transition-transform flex-shrink-0"
+            :class="{ 'rotate-180': showMyMemories }"
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <div v-if="showMyMemories" class="border-t border-gray-800">
+          <!-- Loading -->
+          <div v-if="myMemoriesLoading" class="px-4 py-3 text-xs text-gray-500">
+            Fetching from canister…
+          </div>
+          <!-- Empty -->
+          <div v-else-if="myMemories.length === 0" class="px-4 py-3 text-xs text-gray-600">
+            No memories stored yet. Send a message to create some.
+          </div>
+          <!-- Records -->
+          <div v-else class="divide-y divide-gray-800/60 max-h-56 overflow-y-auto">
+            <div
+              v-for="m in myMemories"
+              :key="m.id"
+              class="px-4 py-2.5 flex items-start gap-2.5"
+            >
+              <span
+                :class="[
+                  'text-[10px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 mt-0.5',
+                  m.memory_type === 'sensitive' ? 'bg-red-950/60 border-red-800/50 text-red-400'     :
+                  m.memory_type === 'private'   ? 'bg-violet-950/60 border-violet-800/50 text-violet-400' :
+                                                  'bg-sky-950/60 border-sky-800/50 text-sky-400'
+                ]"
+              >{{ m.memory_type }}</span>
+              <span class="text-xs text-gray-300 leading-snug">{{ m.content }}</span>
+            </div>
+          </div>
+          <div class="px-4 py-2 border-t border-gray-800/60">
+            <p class="text-[10px] text-gray-600 font-mono">
+              msg.caller = {{ principal }} · private &amp; sensitive visible only to you · LLM sees public only
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Input -->
       <div class="flex gap-3">
         <input
@@ -332,6 +394,21 @@ const icpMemory = computed(() =>
   })
 );
 
+// ─── My Memories (owner-authenticated read, live mode only) ────────
+const showMyMemories     = ref(false);
+const myMemories         = ref([]);
+const myMemoriesLoading  = ref(false);
+
+async function toggleMyMemories() {
+  showMyMemories.value = !showMyMemories.value;
+  // Lazy-load on first open; refresh on subsequent opens to pick up new writes.
+  if (showMyMemories.value) {
+    myMemoriesLoading.value = true;
+    myMemories.value = await icpMemory.value.getMyMemories(principal);
+    myMemoriesLoading.value = false;
+  }
+}
+
 // ─── Chat state ────────────────────────────────────────────────────
 const messages   = ref(props.messages ?? []);
 const input      = ref('');
@@ -384,6 +461,10 @@ async function writeMemoryToBrowser(content, type, metadata) {
   });
   if (id) {
     memoryState.value = { status: 'success', content, source: 'browser' };
+    // Refresh the owner panel so the new record appears immediately.
+    if (showMyMemories.value) {
+      myMemories.value = await icpMemory.value.getMyMemories(principal);
+    }
   } else {
     memoryState.value = { status: 'failed', content };
   }
