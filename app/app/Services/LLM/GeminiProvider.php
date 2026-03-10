@@ -9,7 +9,7 @@ class GeminiProvider implements LlmProviderInterface
 {
     public function __construct(
         private readonly string $apiKey,
-        private readonly string $model = 'gemini-1.5-flash',
+        private readonly string $model = 'gemini-2.0-flash',
         private readonly int $maxTokens = 1024,
     ) {}
 
