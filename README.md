@@ -15,19 +15,21 @@ OpenMemoryAgent demonstrates a different split:
 - The **application** is a normal modern web app (Laravel + Vue + Inertia + Tailwind)
 - The **AI memory layer** is stored in an Internet Computer Protocol canister — not in the app's database
 
-**Pitch:** "Normal AI application. Unusual memory layer."
+**Pitch:** "We're experimenting with what AI memory looks like when identity and write access belong to the user instead of the host app."
 
 ### What this demo proves
 
-- Agent memory can be stored outside the host application's database
-- The same memory persists across chat session resets
-- Memory records are externally inspectable and not locked to one app server
-- The LLM provider can be swapped without affecting where memory lives
+- **Identity is browser-generated**: an Ed25519 key pair is created in the browser on first load and persisted in `localStorage`. The server never generates or stores the private key.
+- **Writes are browser-signed (live ICP mode)**: after the server extracts a memory summary, it returns it to the browser. The browser signs and stores it in the canister using the user's identity — `msg.caller` on the canister is the user's principal, not a value the server supplied.
+- **The canister enforces ownership**: `store_memory` is `public shared(msg) func` — `user_id` is always `msg.caller`, never trusted from the request body. The server cannot write under the user's principal.
+- **Memory lives outside the app**: records are externally readable at `https://<canister-id>.ic0.app/memory/<principal>` with no dependency on the Laravel server.
+- **Memory persists across session resets**: the browser key survives chat resets because it lives in `localStorage`, not the server session.
 
-### What this demo does not yet prove
+### Current limitations
 
-- **User-owned identity**: the user's identity key is currently server-mediated (stored in a session cookie). A future version would use an ICP principal or user-controlled key so memory is truly portable across app deployments.
-- **Full portability across deployments**: while memory lives outside the app DB, re-establishing identity after deploying a new app instance is not implemented in this demo.
+- **`localStorage` is single-device**: the Ed25519 key only persists on the browser that generated it. Upgrading to Internet Identity would give multi-device portability — the architecture is otherwise identical.
+- **Mock mode writes are server-side**: when `ICP_MOCK_MODE=true` (no canister), the server writes to the file cache using the browser-derived principal. Principal authenticity is not cryptographically enforced in mock mode.
+- **Reads are always server-mediated**: the server fetches memory via the adapter to inject it into the system prompt. Direct browser reads are possible but not implemented.
 
 ---
 
@@ -40,43 +42,42 @@ OpenMemoryAgent demonstrates a different split:
 | Database | PostgreSQL (app data) / SQLite (local dev) |
 | Dev environment | Docker |
 | LLM | Swappable — Claude, Gemini, or OpenAI |
-| Memory storage | ICP canister (Motoko) via Node adapter |
+| Memory storage | ICP canister (Motoko) — browser-signed writes; Node adapter for server reads |
 
 ---
 
 ## Architecture
 
 ```
-Browser
+Browser (Vue)
+  │  Ed25519KeyIdentity — generated in localStorage, never sent to server
   │
-  │  Inertia / Vue
-  ▼
-Laravel (PHP)
-  ├── ChatController          — handles messages
-  ├── LlmService              — LLM orchestration (swappable provider)
-  ├── MemorySummarizer        — extracts durable facts from conversations
-  └── IcpMemoryService        — reads/writes memory via adapter
-        │
-        │  HTTP JSON (port 3100)
-        ▼
-  ICP Adapter (Node/Express)  — required when ICP_MOCK_MODE=false
-        │
-        │  Candid (@dfinity/agent)
-        ▼
-  ICP Memory Canister (Motoko)
-        └── store_memory()
-            get_memories()
-            list_recent_memories()
-            health()
+  ├─── POST /chat/send { message, principal } ──────────────► Laravel (PHP)
+  │                                                              ├── ChatController
+  │                                                              ├── LlmService (swappable)
+  │                                                              ├── MemorySummarizer
+  │                                                              └── IcpMemoryService (reads only)
+  │                                                                    │
+  │                                                                    │  HTTP JSON (port 3100)
+  │                                                                    ▼
+  │                                                             ICP Adapter (Node/Express)
+  │                                                                    │  Candid — query calls
+  │                                                                    ▼
+  │◄─── { reply, memory_summary } ─────────────────────────── ICP Memory Canister (Motoko)
+  │                                                                    ▲
+  │  store_memory({ session_id, content })                            │
+  │  signed by Ed25519 identity                                       │
+  └─── browser → canister (live mode only) ──────────────────────────┘
+       msg.caller = user's principal (enforced by canister)
 ```
 
 **What stays in PostgreSQL:** sessions, chat transcript, user records, app metadata.
 
-**What lives in ICP:** conversation memory summaries, retrieved on future chat turns.
+**What lives in ICP:** conversation memory summaries, keyed by the user's browser-derived principal.
 
-**In mock mode** (default): memories are stored in Laravel's file cache. The adapter is not needed. The UI shows an amber "Mock memory" badge everywhere.
+**In mock mode** (default): memories are stored in Laravel's file cache. The adapter is not needed. The UI shows an amber "Mock memory" badge. The browser principal is still generated and sent, but the server writes under it (no cryptographic enforcement).
 
-**In ICP live mode**: the adapter translates HTTP JSON → Candid calls against the deployed canister. The UI shows a green "ICP Live" badge and queries real canister health.
+**In ICP live mode**: the browser signs and sends memory writes directly to the canister — the server is not in the write path. The adapter is used by Laravel for reads only (fetching memories to inject into the system prompt). `msg.caller` on the canister is the user's Ed25519 principal, not a value the server can forge.
 
 ---
 
@@ -164,11 +165,50 @@ ICP_MOCK=false ICP_CANISTER_ID=<canister-id> node server.js
 
 # 6. Update app/.env
 ICP_MOCK_MODE=false
-ICP_CANISTER_ENDPOINT=http://localhost:3100   # app talks to adapter
-ICP_CANISTER_ID=<canister-id>                 # displayed in inspector UI
+ICP_CANISTER_ENDPOINT=http://localhost:3100   # Laravel → adapter (server reads)
+ICP_CANISTER_ID=<canister-id>                 # displayed in inspector + used for canister URL links
+ICP_BROWSER_HOST=http://localhost:4943        # browser → dfx replica (for direct writes)
 ```
 
-The adapter uses `ICP_DFX_HOST` (default `http://localhost:4943`) to reach dfx. In Docker, set `ICP_DFX_HOST` to the dfx host reachable from the adapter container. For ICP mainnet, set `ICP_DFX_HOST=https://ic0.app`.
+`ICP_BROWSER_HOST` is the URL the **user's browser** uses to reach the dfx replica or ICP mainnet gateway. It is separate from `ICP_CANISTER_ENDPOINT` (which is the server→adapter URL). For mainnet, set `ICP_BROWSER_HOST=https://ic0.app`. The adapter uses `ICP_DFX_HOST` (default `http://localhost:4943`) to reach dfx for its own read calls — set that separately if needed.
+
+---
+
+## Canister HTTP Endpoint
+
+The memory canister exposes memory records over plain HTTP — no Candid or dfx required.
+
+```
+# Health / record count
+curl https://<canister-id>.ic0.app/memory
+
+# All memories for a user
+curl https://<canister-id>.ic0.app/memory/<user_id>
+```
+
+Example response:
+```json
+[
+  {
+    "id": "abc12-defgh-ijklm-nopqr-cai:0",
+    "user_id": "abc12-defgh-ijklm-nopqr-cai",
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "content": "User is Anthony, builds AI tools.",
+    "timestamp": 1709123456789000000,
+    "metadata": "{\"source\":\"chat\",\"provider\":\"claude\"}"
+  }
+]
+```
+
+`user_id` is an ICP principal derived from the browser's Ed25519 key — not a server-assigned ID. The canister enforces this: `msg.caller` on `store_memory()` becomes `user_id`; the request body has no `user_id` field.
+
+This is the concrete proof that memory lives outside the app: the URL works from any browser, any terminal, any app — with no dependency on the Laravel server. In the Memory Inspector (live mode), each record shows a clickable link directly to its canister URL.
+
+Locally with dfx, use:
+```bash
+# dfx routes HTTP through the replica with a query param
+curl "http://localhost:4943/memory/<user_id>?canisterId=<canister-id>"
+```
 
 ---
 
@@ -184,27 +224,29 @@ The adapter uses `ICP_DFX_HOST` (default `http://localhost:4943`) to reach dfx. 
 ## Demo Script (5 minutes)
 
 ### Setup
-> The app is running. Notice the amber **Mock memory** badge in the nav — that shows the current memory layer status. For this demo, memory is stored in a local cache; with a deployed canister, it would show **ICP Live**.
+> The app is running. The chat header shows a **Browser key** badge next to a truncated principal — that's an Ed25519 key pair generated in this browser right now. The server never had the private key. Notice the **Mock memory** or **ICP Live** badge in the nav.
 
 ### Step 1 — Introduce yourself
 > Say: "My name is Anthony and I build AI tools."
-> The agent replies, and after a moment an emerald notification appears: **"Memory stored (mock): User is Anthony, builds AI tools."**
+> The agent replies. An emerald notification appears:
+> - Mock mode: **"Memory stored (mock):"** — server wrote to file cache under your browser principal.
+> - Live mode: **"Memory stored on ICP (browser-signed): … Signed by your browser key · server cannot write this"** — the browser signed and sent the write directly to the canister.
 
 ### Step 2 — Show the Memory Inspector
 > Click **Memory Inspector** in the nav. Point out:
-> - The record appears with the user identity key, content, and timestamp.
-> - In ICP live mode, this record lives in a canister external to the app database.
+> - The record's `user_id` is an ICP principal — not a server-assigned ID.
+> - In live mode: click the `ic0.app/memory/<principal>` link. That URL works from any browser, any terminal, with no dependency on this app server.
 
 ### Step 3 — Reset the chat session
 > Click **New session**. The confirm dialog says the memory is preserved.
-> After reset, notice the same **user identity key** appears in the chat header. The transcript is gone but the identity — and the memory — remain.
+> After reset, the **Browser key** badge and the same principal reappear — loaded from `localStorage`. The transcript is gone; the identity is not.
 
 ### Step 4 — Ask what it remembers
 > Say: "What do you remember about me?"
-> The agent retrieves memory from the layer and responds with context.
+> The agent retrieves the memory and responds with context.
 
 ### The point to make
-> "The memory is stored outside this app's database. In full ICP mode, a different app instance would retrieve the same records. The chat server doesn't own the memory — the infrastructure does."
+> "That write was signed in the browser. The server returned the summary and got out of the way — it couldn't have written that record under my principal even if it tried. The memory is mine, not the app's."
 
 ---
 
@@ -231,19 +273,22 @@ OpenMemoryAgent/
 │   │   ├── Pages/
 │   │   │   ├── Chat/Index.vue
 │   │   │   └── Memory/Index.vue
-│   │   └── Components/
-│   │       ├── AppLayout.vue
-│   │       ├── NavLink.vue
-│   │       ├── StatCard.vue
-│   │       ├── ArchNode.vue
-│   │       └── ArchArrow.vue
+│   │   ├── Components/
+│   │   │   ├── AppLayout.vue
+│   │   │   ├── NavLink.vue
+│   │   │   ├── StatCard.vue
+│   │   │   ├── ArchNode.vue
+│   │   │   └── ArchArrow.vue
+│   │   └── composables/
+│   │       ├── useIcpIdentity.js  # Ed25519 key generation + localStorage persistence
+│   │       └── useIcpMemory.js    # Browser-signed canister write actor
 │   └── database/migrations/
 ├── icp/
 │   ├── src/memory/
-│   │   ├── main.mo               # Motoko canister — store/retrieve/health
+│   │   ├── main.mo               # Motoko canister — store/retrieve/http_request/health
 │   │   └── types.mo
 │   ├── adapter/
-│   │   └── server.js             # Node adapter (required for live ICP)
+│   │   └── server.js             # Node adapter — reads only in live mode; full mock in mock mode
 │   └── dfx.json
 ├── docker/
 │   ├── nginx/default.conf
@@ -257,12 +302,14 @@ OpenMemoryAgent/
 
 | Layer | Role |
 |---|---|
-| Laravel | Request handling, LLM orchestration, memory extraction, session identity |
-| Vue + Inertia | Chat UI, Memory Inspector, live mode/mock status display |
+| Laravel | Request handling, LLM orchestration, memory summarization, memory reads |
+| Vue + Inertia | Chat UI, identity management, browser-signed ICP writes, Memory Inspector |
+| `useIcpIdentity.js` | Generates Ed25519 key in browser localStorage; derives ICP principal |
+| `useIcpMemory.js` | Browser actor for signing and sending `store_memory` calls to the canister |
 | PostgreSQL | Chat transcript, user records, app-level data |
-| IcpMemoryService | Talks to adapter; mock-or-live switchable via `ICP_MOCK_MODE` |
-| ICP adapter (Node) | Translates HTTP JSON → Candid; required for live mode |
-| ICP canister (Motoko) | Stable memory storage outside the application database |
+| IcpMemoryService | Reads memories from adapter for LLM context; mock-or-live switchable |
+| ICP adapter (Node) | Reads: HTTP JSON → Candid query calls. Writes: mock mode only |
+| ICP canister (Motoko) | Enforces `msg.caller` as `user_id`; serves JSON over HTTP gateway |
 | LLM providers | Claude / Gemini / OpenAI — swappable, memory layer unchanged |
 
 ---
@@ -273,6 +320,6 @@ OpenMemoryAgent/
 
 Today, AI agents remember you because the operator stored your memory in their infrastructure. OpenMemoryAgent explores what it looks like when that memory lives on a separate layer — one the app uses but does not own.
 
-The current implementation stores distilled memory summaries (not raw transcripts) in an ICP canister. The app retrieves them on future turns to personalize responses. The memory outlives any individual chat session.
+The current implementation stores distilled memory summaries (not raw transcripts) in an ICP canister, keyed by a browser-generated Ed25519 principal. In live ICP mode, writes are signed by the user's browser key — the server is not in the write path and cannot forge entries under the user's identity. The memory outlives any individual chat session.
 
-The deeper ambition — fully user-controlled portable identity — is the natural next step.
+The next step is multi-device portability via Internet Identity — swapping `Ed25519KeyIdentity` for a WebAuthn-backed ICP principal. The write path, canister logic, and read flow are unchanged.
