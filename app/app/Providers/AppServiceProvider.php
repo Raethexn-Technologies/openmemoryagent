@@ -3,11 +3,8 @@
 namespace App\Providers;
 
 use App\Services\IcpMemoryService;
-use App\Services\LLM\ClaudeProvider;
-use App\Services\LLM\GeminiProvider;
 use App\Services\LLM\LlmProviderInterface;
 use App\Services\LLM\LlmService;
-use App\Services\LLM\OpenAIProvider;
 use App\Services\LLM\OpenRouterProvider;
 use App\Services\MemorySummarizationService;
 use Illuminate\Support\ServiceProvider;
@@ -16,30 +13,13 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        // Bind the LLM provider based on config — swap via LLM_PROVIDER env var
         $this->app->bind(LlmProviderInterface::class, function () {
-            $provider = config('services.llm.provider', 'claude');
-
-            return match ($provider) {
-                'gemini' => new GeminiProvider(
-                    apiKey: config('services.llm.gemini_api_key'),
-                    model: config('services.llm.gemini_model', 'gemini-1.5-flash'),
-                ),
-                'openai' => new OpenAIProvider(
-                    apiKey: config('services.llm.openai_api_key'),
-                    model: config('services.llm.openai_model', 'gpt-4o-mini'),
-                ),
-                'openrouter' => new OpenRouterProvider(
-                    apiKey:    config('services.llm.openrouter_api_key'),
-                    model:     config('services.llm.openrouter_model', 'anthropic/claude-sonnet-4.5'),
-                    siteUrl:   config('services.llm.openrouter_site_url', ''),
-                    siteName:  config('services.llm.openrouter_site_name', 'OpenMemoryAgent'),
-                ),
-                default => new ClaudeProvider(
-                    apiKey: config('services.llm.claude_api_key'),
-                    model: config('services.llm.claude_model', 'claude-sonnet-4-6'),
-                ),
-            };
+            return new OpenRouterProvider(
+                apiKey:   config('services.llm.openrouter_api_key') ?? '',
+                model:    config('services.llm.openrouter_model', 'anthropic/claude-sonnet-4.5'),
+                siteUrl:  config('services.llm.openrouter_site_url', ''),
+                siteName: config('services.llm.openrouter_site_name', 'OpenMemoryAgent'),
+            );
         });
 
         $this->app->singleton(LlmService::class, function ($app) {

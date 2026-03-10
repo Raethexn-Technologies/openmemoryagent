@@ -35,16 +35,8 @@ return [
         ],
     ],
 
-    // LLM Provider config — swap via LLM_PROVIDER env var
+    // LLM — OpenRouter proxies 400+ models under one API key (openrouter.ai)
     'llm' => [
-        'provider'        => env('LLM_PROVIDER', 'claude'),
-        'claude_api_key'  => env('CLAUDE_API_KEY'),
-        'claude_model'    => env('CLAUDE_MODEL', 'claude-sonnet-4-6'),
-        'gemini_api_key'  => env('GEMINI_API_KEY'),
-        'gemini_model'    => env('GEMINI_MODEL', 'gemini-1.5-flash'),
-        'openai_api_key'  => env('OPENAI_API_KEY'),
-        'openai_model'    => env('OPENAI_MODEL', 'gpt-4o-mini'),
-        // OpenRouter — access 200+ models with one API key (openrouter.ai)
         'openrouter_api_key'  => env('OPENROUTER_API_KEY'),
         'openrouter_model'    => env('OPENROUTER_MODEL', 'anthropic/claude-sonnet-4.5'),
         'openrouter_site_url' => env('OPENROUTER_SITE_URL', ''),
