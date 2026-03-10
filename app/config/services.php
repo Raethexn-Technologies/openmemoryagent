@@ -44,6 +44,11 @@ return [
         'gemini_model'    => env('GEMINI_MODEL', 'gemini-1.5-flash'),
         'openai_api_key'  => env('OPENAI_API_KEY'),
         'openai_model'    => env('OPENAI_MODEL', 'gpt-4o-mini'),
+        // OpenRouter — access 200+ models with one API key (openrouter.ai)
+        'openrouter_api_key'  => env('OPENROUTER_API_KEY'),
+        'openrouter_model'    => env('OPENROUTER_MODEL', 'anthropic/claude-sonnet-4.5'),
+        'openrouter_site_url' => env('OPENROUTER_SITE_URL', ''),
+        'openrouter_site_name'=> env('OPENROUTER_SITE_NAME', 'OpenMemoryAgent'),
     ],
 
     // ICP Memory Canister

@@ -8,6 +8,7 @@ use App\Services\LLM\GeminiProvider;
 use App\Services\LLM\LlmProviderInterface;
 use App\Services\LLM\LlmService;
 use App\Services\LLM\OpenAIProvider;
+use App\Services\LLM\OpenRouterProvider;
 use App\Services\MemorySummarizationService;
 use Illuminate\Support\ServiceProvider;
 
@@ -27,6 +28,12 @@ class AppServiceProvider extends ServiceProvider
                 'openai' => new OpenAIProvider(
                     apiKey: config('services.llm.openai_api_key'),
                     model: config('services.llm.openai_model', 'gpt-4o-mini'),
+                ),
+                'openrouter' => new OpenRouterProvider(
+                    apiKey:    config('services.llm.openrouter_api_key'),
+                    model:     config('services.llm.openrouter_model', 'anthropic/claude-sonnet-4.5'),
+                    siteUrl:   config('services.llm.openrouter_site_url', ''),
+                    siteName:  config('services.llm.openrouter_site_name', 'OpenMemoryAgent'),
                 ),
                 default => new ClaudeProvider(
                     apiKey: config('services.llm.claude_api_key'),
