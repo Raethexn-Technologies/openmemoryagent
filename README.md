@@ -2,7 +2,7 @@
 
 An experimental chat application that stores AI memory summaries in an ICP canister rather than in the host application's database. The user's browser holds an Ed25519 signing key, and writes to the canister are authenticated with that key so the server cannot write memory records under a user's identity.
 
-[VISION.md](./VISION.md) covers the design decisions and research questions in depth.
+[VISION.md](./VISION.md) covers the design decisions and research questions in depth. [DEVLOG.md](./DEVLOG.md) is the running record of what was discovered building it — implementation findings, security fixes, and what remains unresolved.
 
 ---
 
@@ -145,23 +145,30 @@ OpenMemoryAgent/
 │   ├── app/
 │   │   ├── Http/Controllers/
 │   │   │   ├── ChatController.php
+│   │   │   ├── GraphController.php
 │   │   │   └── MemoryController.php
 │   │   ├── Services/
 │   │   │   ├── IcpMemoryService.php
 │   │   │   ├── MemorySummarizationService.php
+│   │   │   ├── GraphExtractionService.php    # LLM extracts node type, label, tags from each memory
+│   │   │   ├── MemoryGraphService.php        # stores nodes, auto-wires edges, neighborhood traversal
 │   │   │   └── LLM/
 │   │   │       ├── LlmProviderInterface.php
 │   │   │       ├── LlmService.php
 │   │   │       └── OpenRouterProvider.php
-│   │   └── Models/Message.php
+│   │   └── Models/
+│   │       ├── Message.php
+│   │       ├── MemoryNode.php
+│   │       └── MemoryEdge.php
 │   ├── resources/js/
 │   │   ├── Pages/
 │   │   │   ├── Chat/Index.vue        # chat interface and My Memories panel
-│   │   │   └── Memory/Index.vue      # memory inspector
+│   │   │   ├── Memory/Index.vue      # flat memory inspector
+│   │   │   └── Memory/Graph.vue      # brain-like graph explorer (D3 force-directed)
 │   │   └── composables/
 │   │       ├── useIcpIdentity.js     # Ed25519 key generation and localStorage persistence
 │   │       └── useIcpMemory.js       # browser-signed writes and owner-authenticated reads
-│   └── tests/Feature/ExampleTest.php
+│   └── tests/Feature/
 ├── icp/
 │   ├── src/memory/
 │   │   ├── main.mo                   # Motoko canister source
@@ -175,7 +182,8 @@ OpenMemoryAgent/
 ├── docker-compose.yml
 ├── LICENSE
 ├── CONTRIBUTING.md
-└── VISION.md
+├── VISION.md                         # research position: design decisions, what this proves, open questions
+└── DEVLOG.md                         # captain's log: what was discovered building it, entry by entry
 ```
 
 ---

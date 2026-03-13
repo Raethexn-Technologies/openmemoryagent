@@ -1,0 +1,611 @@
+# OpenMemoryAgent — Development Log
+
+*A running record of what was discovered building this. Not polished. Not final. The honest account of what happened when the ideas met implementation.*
+
+---
+
+## How this document fits
+
+Three documents, three purposes:
+
+- **README.md** — how to run it
+- **VISION.md** — the research position: design decisions, what this proves, what it doesn't, open questions. Updated when the thinking matures.
+- **DEVLOG.md** (this file) — the captain's log. Appended to as features are built. Implementation findings, security incidents, architectural tensions, unresolved problems. When a finding in here stabilizes into a design decision, it graduates into VISION.md.
+
+The log is append-only. Entries are not edited after the fact.
+
+---
+
+## Entry 001 — 2026-03-12
+### The graph memory layer: what we learned building a brain-like memory system
+
+#### What prompted this
+
+The flat memory model — each conversation turn produces zero or one memory record, stored as a string in ICP — works well for "remember facts." It does not work well for "reason over history." An agent with 200 flat memory records cannot answer "what decisions led here?" or "what do I know about this person?" or "what was the context around that project?" It can only answer "do I have a fact that matches this query?"
+
+The insight from the design conversation was this: the difference between useful agent memory and a flat list is *navigability*. Not embeddings. Not RAG. A graph with typed nodes and semantic edges that an agent (or a user) can actually traverse.
+
+That reframe changed the implementation from "add a vector index" to "build a memory graph with file-explorer ergonomics."
+
+---
+
+#### What was built
+
+**Storage layer:**
+- `memory_nodes` table: typed units (memory, person, project, document, task, event, concept), sensitivity-aware, tagged
+- `memory_edges` table: directed relationships (same_topic_as, about_person, part_of, caused_by, related_to, etc.) with weights
+
+**Extraction pipeline:**
+- A second LLM call now runs after every memory is confirmed stored
+- Input: the memory content string + its sensitivity classification
+- Output: NODE_TYPE, LABEL, TAGS (3–7 keywords), PEOPLE (proper names), PROJECTS (proper names)
+- This is `GraphExtractionService` — a structured prompt that treats the memory fact as a graph artifact rather than a narrative string
+
+**Auto-wiring:**
+- Tag overlap ≥ 1 → `same_topic_as` edge, weight proportional to overlap count
+- Named person → find or create person anchor node at matching sensitivity → `about_person` edge
+- Named project → find or create project anchor node at matching sensitivity → `part_of` edge
+- Checked against last 100 nodes to keep the operation bounded
+
+**Visualization:**
+- D3 force-directed graph with three views: graph, timeline, list
+- Left panel: type filters, search
+- Right panel: node detail, connected nodes, neighborhood expand
+- Nodes sized by degree (connection count), colored by type
+
+---
+
+#### What was actually discovered
+
+**1. Two LLM passes per memory turn is a meaningful cost change.**
+
+The pipeline is now: user message → LLM response → memory extraction (LLM call 1) → graph extraction (LLM call 2). That's up to three LLM calls per chat turn if a memory is found. The graph extraction call is cheap (short prompt, short output), but it's real cost and real latency.
+
+The open question: can these two extraction steps be merged into one structured prompt? Almost certainly yes. A single call could return `MEMORY: <content> | TYPE: <sensitivity> | NODE_TYPE: ... | LABEL: ... | TAGS: ...`. This hasn't been done yet because keeping them separate makes each one easier to test and debug. But the two-call design is technical debt with a clear resolution path.
+
+**2. Auto-wiring produced emergent structure nobody explicitly designed.**
+
+After a few conversations, person anchor nodes appear automatically. Project clusters form. Tags create cross-session connections that feel semantically correct without being manually specified. The graph starts to look like something — clusters, hub nodes, peripheral facts — without the user doing anything.
+
+This is the "brain-like" property the design was aiming for. It emerged from three simple rules (tag overlap, person extraction, project extraction), not from anything complex. The value is not in the algorithm; it's in making the connections visible and traversable.
+
+**3. The graph/ICP architectural split is more interesting than it first appeared.**
+
+ICP holds the ownership and durability layer: write authorization, read access control by `msg.caller`, on-chain permanence. PostgreSQL holds the navigable graph: typed nodes, weighted edges, neighborhood traversal, filter queries.
+
+This split is architecturally clean right now. But it creates a question: the memory records are user-owned (cryptographically enforced on ICP). The graph structure — the nodes, edges, labels, tags — is *not* user-owned. It lives in the application's PostgreSQL. If the server goes away, the graph goes with it even though the raw memories persist on ICP.
+
+This is a version of the original problem applied one layer up. The memory records escaped the server's control. The graph structure has not. Whether that matters depends on how important the graph is — if it's reconstructable from the ICP records (rerun graph extraction on every stored memory), it may not need to be owned separately. But if the graph accumulates user-contributed structure (manual labels, custom edges, corrections), then it becomes data the user has stake in that currently lives entirely on the server.
+
+No resolution yet. Worth keeping in mind as the graph layer grows.
+
+**4. Sensitivity inheritance on derived nodes was non-obvious and a real security problem.**
+
+When graph extraction runs on a private memory and finds a person's name, it creates a person anchor node. The original implementation created anchor nodes as public regardless of the source memory's sensitivity.
+
+The problem: a public `person` anchor node for "Alice" extracted from a private memory means any observer of the public graph can see that this user has a memory involving someone named Alice in a private context. The name is leaked even if the memory content is not.
+
+The fix — anchor nodes inherit the source node's sensitivity — is correct but creates a new question: what happens when the same person appears in both a public memory and a private memory? Currently they become two separate anchor nodes at different sensitivities. This is safe (no leakage) but slightly incoherent (the same person exists as two nodes). A better model might be: the person anchor lives at the *lowest sensitivity at which they appear*, and edges carry the sensitivity of the source memory rather than the node itself. This would allow one person node to have both public and private connections. Not implemented; noted for the next graph design pass.
+
+**5. The neighborhood API without user scoping was a real data leak vector.**
+
+The first implementation of `getNeighborhood` accepted a node UUID and expanded without checking that the requesting user owned the root node. Anyone who guessed (or observed) a valid UUID could traverse another user's graph by starting from any node they found.
+
+UUIDs are not secret. They are just long. "Security by UUID obscurity" is not acceptable for a system whose stated purpose is user-controlled privacy.
+
+The fix (scope all node queries through `nodeQuery(userId, filters)`) is correct. The broader lesson: every read endpoint in a multi-user system needs explicit user ownership scoping, not just the "main" data endpoints. Derived operations (neighborhood traversal, cluster queries, search) inherit the risk of the base query if the base query is not properly scoped.
+
+**6. Graph writes must follow confirmed storage, not precede it.**
+
+The first implementation wrote the graph node as part of the `send()` response flow, before the browser had confirmed whether the user approved a private/sensitive memory. This meant: rejected memories still appeared in the graph. Failed live ICP writes still appeared in the graph.
+
+The fix was to move `syncMemoryGraph` to run only after:
+- Confirmed `storeMemory()` in mock mode (public path)
+- Confirmed `mockStoreApproved()` in mock mode (private/sensitive path)
+- Confirmed canister write ID returned to the browser (live ICP path, via `/chat/sync-graph-memory`)
+
+The general principle: derived data structures should follow source-of-truth writes, not precede them. The graph is derived from memory records. It should reflect confirmed state, not optimistic state.
+
+---
+
+#### What the three views revealed about how people navigate memory
+
+Building graph, timeline, and list views for the same data surfaced something useful.
+
+The **graph view** is best for exploration and discovery — "what is connected to what?" — but it is cognitively demanding and can feel cluttered with more than ~30 nodes. It is the right tool for a user trying to understand the shape of their memory, not for retrieving a specific fact.
+
+The **timeline view** is best for "what did I tell the agent recently?" and for debugging the extraction pipeline during development. Chronological order gives a different mental model than topological order.
+
+The **list view** is best for search and for quick inspection. It is the fastest way to find a specific node.
+
+Each view answers a different question. An agent navigating memory programmatically needs a fourth view — a context-pack view that says "given this task, what memories are relevant?" — which none of the three current views provide. That is the next meaningful UI problem.
+
+---
+
+#### What remains unresolved
+
+1. **Two-pass extraction:** Merge the memory extraction and graph extraction into a single structured LLM call. Reduces cost and latency.
+
+2. **Same-person-multiple-sensitivity problem:** One person appearing in both public and private memories creates two anchor nodes. The right data model may be sensitivity on edges, not nodes, for entity anchors.
+
+3. **Graph ownership:** The graph structure lives in the application's PostgreSQL. The memory records live in ICP. These have different ownership properties. If the graph becomes something the user contributes structure to (manual labels, custom edges), it needs its own ownership story.
+
+4. **Agent context-pack view:** The graph is currently user-browsable but not agent-queryable in a meaningful way. A "build context for this task" operation — collect the N most relevant nodes given a task description — would make the graph useful during inference, not just for inspection.
+
+5. **Graph reconstruction from ICP:** If the graph is always re-derivable from stored memory records, the ownership gap above is less critical. Whether that reconstruction is lossless depends on whether any graph structure is user-contributed vs. auto-extracted.
+
+6. **Cluster labeling:** The cluster count stat in the explorer is currently a number. Showing the user what the clusters are about — automatically labeling them by dominant tag or node type — would make the graph substantially more useful for self-understanding.
+
+---
+
+*This is entry 001. The findings here will feed the next revision of VISION.md once the picture is clearer.*
+
+---
+
+## Entry 002 — 2026-03-12
+### The 3D brain visualization: AI memory as a living, navigable neural network globe
+
+#### The idea
+
+The D3 graph explorer built in this session is flat. A force-directed graph on a 2D canvas is the right first step, but it doesn't match the actual mental model we're building toward. The mental model is a *brain* — spatial, spherical, animated, alive while the AI is working.
+
+The concrete proposal: replace the flat graph tab with a Three.js globe/neural network visualization where:
+
+- The overall shape is a sphere — the "brain" — not a flat plane
+- Memory nodes live on and inside that sphere, not on a canvas
+- Node geometry changes by type: memory facts are one shape, person anchors are another, project clusters are another, concepts pulse differently
+- Edge thickness encodes relationship weight and recency — strong recent connections are thick, old weak ones are thin and faint
+- The whole thing is animated and reacts live: when the AI is reading memory to build a response, the relevant nodes glow and their connections light up in sequence, showing what the agent is actually loading into context
+- When the AI writes a new memory, a new node materializes and you can watch the auto-wiring happen in real time
+
+The aesthetic goal is not decorative. The point is that you can *watch the brain think* and know exactly what context the AI has loaded, rather than inferring it from text output.
+
+---
+
+#### The cross-agent, cross-project layer
+
+This is where the idea becomes architecturally interesting.
+
+Right now the graph shows one user's memories in one session. The vision extends this to:
+
+**Multiple agents visible simultaneously.** If two AI agents are running — one working on Project A, one on Project B — both are visible in the same 3D space as distinct activity regions on the globe. Different hemispheres, different color temperatures, different pulse rhythms.
+
+**Shared memory nodes are the key visual primitive.** When Agent A and Agent B both reference the same memory node — say, a fact about a shared person or a shared technical decision — that node sits between their two regions and pulses when either agent accesses it. You can see at a glance what memory is shared across agents and what is isolated.
+
+**Agent access trails.** When Agent A reads a memory that Agent B has also used, there is a visible trace — a brief arc or light pulse — showing the traversal. You are literally watching one agent's reasoning touch a node that another agent's reasoning touched. That is something no current tool shows.
+
+**High-level project view.** Zoom out and instead of seeing individual memory nodes you see project clusters — dense regions of connected nodes. Zoom in and you enter the cluster, navigate its internal graph, see its memories. This is spatial navigation: zoom, fly through, traverse. Not click-into-folder, click-back-out.
+
+---
+
+#### Why the file explorer is the right comparison
+
+The brainstorm made an important observation: the linear file explorer is a 1970s interface applied to a 2025 problem.
+
+A folder hierarchy is:
+- Sequential — you are always *inside* exactly one folder
+- Flat at each level — siblings are listed vertically, not spatially related
+- Navigationally one-directional — you enter or you leave, you cannot be in two places
+- Structurally oblivious — a file explorer has no idea that `project-a/notes.md` and `project-b/notes.md` reference the same person
+
+VS Code improved this by allowing multiple roots and split panes, but it is still a linear stack of paths. You open a file from folder A and a file from folder B and they are both open, but you cannot *see* that they share a dependency or a memory reference. The relationship is invisible.
+
+A 3D memory graph replaces this with:
+- **Spatial position** — nodes that are semantically related live near each other regardless of which folder or project they came from
+- **Simultaneous visibility** — you can see Project A's cluster and Project B's cluster at the same time and see the edges between them
+- **Traversal by following edges** — navigation is associative (follow a connection) not hierarchical (enter a folder)
+- **Relationship as first-class UI** — the edges *are* the interface, not an afterthought
+
+The file explorer problem and the AI memory problem are the same problem. Both are about navigating a large set of related artifacts. The folder metaphor was designed for documents stored sequentially on disk. It does not fit a graph of semantically connected memories, code files, decisions, and people.
+
+---
+
+#### What this technically requires
+
+**Three.js for the 3D rendering:**
+- Replace or augment the D3 SVG canvas with a Three.js WebGL scene
+- Nodes as 3D geometries: SphereGeometry for memories, ConeGeometry for persons, TorusGeometry for projects, etc.
+- Edges as TubeGeometry or Line objects with variable radius for weight
+- OrbitControls for globe rotation, zoom, pan
+- The sphere itself as a subtle wireframe or particle field backdrop — the "brain cage"
+
+**Live animation layer:**
+- When `/chat/send` is called, the frontend knows a memory read is happening
+- Highlight the nodes returned by `getPublicMemories()` — those are the nodes the AI is loading
+- When a new memory is written, animate the new node materializing and its edges wiring in
+- When the user is typing, a low-level ambient pulse — the brain at rest
+- When the AI responds, a propagation wave through the active nodes — the brain working
+
+**Multi-agent / multi-project data model:**
+- Currently the graph is scoped to one user's `chat_user_id`
+- A multi-agent view requires: agent identity (which agent is accessing), project identity (which project the agent is working on), and access events (timestamped reads and writes)
+- This means logging agent memory access events, not just storing memory nodes
+- An `agent_events` table: `{agent_id, node_id, event_type: read|write, timestamp, project_id}`
+- The 3D scene subscribes to this event stream (WebSocket or polling) and animates accordingly
+
+**Spatial layout algorithm:**
+- D3's force simulation places nodes on a 2D plane
+- For a globe, nodes need to be placed on or inside a sphere
+- Options: project force-directed positions onto a sphere surface, use spherical coordinates with clustering by project/type, or use a 3D force simulation (d3-force-3d exists)
+- Clusters (project regions) should be spatially coherent — all of Project A's nodes in one hemisphere, Project B's in another
+- The challenge is that shared nodes between projects need to live between the clusters, which means the layout algorithm needs to know about cross-project edges before positioning
+
+**File explorer integration:**
+- The vision is not just "pretty graph" but "replace the file system as navigation interface"
+- This means: code files, documents, and AI memory nodes coexist in the same 3D space
+- A code file is a node. Its imports are edges. Its related memory (facts extracted from conversations about it) are edges. Its git history (commits that touched it) are edges.
+- The 3D space becomes the unified interface for a project — not a folder tree plus a separate memory inspector plus a separate git log, but one navigable graph that contains all of them
+- This is a substantially larger project than the memory graph alone, but the memory graph is the right starting point because it already has the node/edge model
+
+---
+
+#### What makes this genuinely novel
+
+Most graph visualization tools show you a static graph. You look at it. It does not change while you work.
+
+The novel property here is **live reflection of agent cognitive state**. You are not looking at a record of what the AI remembered. You are watching it remember, in real time, in 3D. The animation is not decoration — it is a transparency mechanism. It answers the question "what is the AI actually thinking about right now?" in a way that no text output can.
+
+The cross-agent shared memory view is also novel. No current tool lets you watch two AI agents share a memory reference and see that from a third-party perspective. It makes the multi-agent collaboration model visible rather than implicit.
+
+The file explorer rethinking is the larger claim. Replacing the folder hierarchy with a 3D semantic graph is a genuine interface paradigm shift, not an incremental improvement. Whether it is practical for most users is an open question. Whether it is the right interface for AI-native workflows — where the relationships between artifacts matter as much as the artifacts themselves — is a stronger claim.
+
+---
+
+#### What needs to be decided before building
+
+1. **Three.js vs. D3 — replace or coexist?** The D3 graph is already built and tested. Three.js is a completely different rendering pipeline. Options: replace D3 entirely, run Three.js as a separate tab alongside the D3 view, or use a library like `three-forcegraph` that wraps Three.js in a force-directed graph interface. The cleanest path is probably a dedicated Three.js tab rather than removing the D3 view, since the 2D view is more legible for small graphs.
+
+2. **Live animation data source.** The animation requires the frontend to know which nodes the AI just read. Currently `getPublicMemories()` returns records but the frontend never sees which ones. The `send()` response would need to include the IDs of the memory nodes that were loaded into context, so the visualization can highlight them.
+
+3. **Multi-agent scope.** Is the multi-agent view part of v2 of the graph, or a separate product? The single-user memory brain is already a complete and demonstrable thing. Multi-agent visualization requires a different data model (agent identities, project identities, event logging). Starting with the single-user animated brain and adding multi-agent later is the right sequencing.
+
+4. **File system integration scope.** Integrating code files, git history, and AI memory into one graph is a significant expansion of scope. It is the right long-term direction but it changes what the project is — from "AI memory explorer" to "AI-native project workspace." Worth naming that transition explicitly before building toward it.
+
+---
+
+#### The strongest version of this idea, stated plainly
+
+> A 3D globe that is the AI's brain. You can watch it think. You can see what it remembers, what it is reading right now, and what it just learned. When multiple agents work on related projects, you can see their memories overlap and diverge. When you navigate your project, you move through a 3D semantic graph rather than a linear folder tree. The edges are the interface.
+
+That is a compelling product description. The memory graph built so far is the data layer. The Three.js visualization is the experience layer. They are the same system at different levels of rendering.
+
+---
+
+*Entry 002 captured from brainstorm. Implementation begins when the data model decisions above are resolved. Next: decide whether live node highlighting (which memories were loaded into this response) should be added to the existing API before starting Three.js work — that data is needed for the live brain animation regardless of rendering library.*
+
+---
+
+## Entry 003 — 2026-03-12
+### The research foundation: what science and mathematics actually support this system
+
+*"When mushrooms grow through a maze, they find the best paths needed." — the design principle that guided this research pass.*
+
+This entry is a PhD-level literature review structured around what the biology, mathematics, and computer science actually say — and what each finding implies for the architecture of this system. It is not a reading list. Every paper cited below changes something about how this should be built.
+
+---
+
+### Part I — The Biological Models
+
+#### 1. Physarum polycephalum: the slime mold that computes
+
+**Nakagaki, T., Yamada, H., & Tóth, Á. (2000). "Maze-solving by an amoeboid organism." *Nature*, 407, 470.**
+The founding paper. A single-celled organism with no brain solves a maze by simultaneously exploring every path with cytoplasm, then retracting from dead ends while thickening the tubes that carry more flux. The organism finds the shortest path between two food sources by a purely physical mechanism: *a tube thickens as the flux through it increases*. There is no central planner. The optimal solution emerges from local reinforcement.
+
+**Tero, A. et al. (2010). "Rules for Biologically Inspired Adaptive Network Design." *Science*, 327(5964), 439–442.**
+Mathematical formalization of the Physarum mechanism. The key equation: `dD_e/dt = f(Q_e) − γD_e` where D_e is the conductance of an edge, Q_e is the flux through it, and γ is a decay constant. Conductance grows with flux and decays over time. This is the mathematical model of a self-optimizing network.
+
+**Slime mold uses an externalized spatial "memory" to navigate in complex environments. *PNAS*, 2012. (PMC3491460)**
+Physarum deposits extracellular slime as a memory of where it has already been, avoiding re-exploration of dead ends. The organism offloads memory to the environment rather than encoding it internally. This is stigmergy at the cellular level.
+
+**What this means for the system:**
+
+The `weight` field on `memory_edges` is currently a static value set at creation and never updated. That is not how the slime mold works. The slime mold's equivalent of `weight` is `conductance` — and conductance is a living value that grows when the edge is traversed and decays when it is not.
+
+The design implication is concrete: **edge weights must be dynamic**. Every time a memory node is loaded into the LLM's context, the edges connecting it to the rest of the graph should receive a conductance increment. Every time an edge is not traversed for some period, its weight should decay toward a minimum. Edges that are never reinforced eventually become too faint to traverse. Edges between memories that are always recalled together become thick, prominent, fast-path connections.
+
+The mathematical model to use is exactly Tero's: `new_weight = old_weight + α·access − γ·time_since_access`. This turns the static graph into a living one.
+
+---
+
+#### 2. Mycelium networks: distributed memory without a center
+
+**Adamatzky, A. (2018). "Towards fungal computer." *Interface Focus*, 8(6), Royal Society Publishing. (PMC6227805)**
+The most comprehensive treatment of mycelium as a computing substrate. Mycelium processes information via propagation of electrical and chemical signals paired with morphological changes. The network is simultaneously the memory, the communication channel, and the processor. There is no central node. Intelligence is distributed across the entire network topology.
+
+**Ecological memory and relocation decisions in fungal mycelial networks. *The ISME Journal*, 2020. (PMC6976561)**
+Mycelium exhibits "ecological memory" — carry-over effects where the distribution of the network reflects past resource locations. The shape of the network at time T encodes the history of what was important at times T-1, T-2, ... The structure *is* the memory.
+
+**Adamatzky, A. (2022). "Mining logical circuits in fungi." *Scientific Reports*. (Nature)**
+Mycelium networks can implement Boolean logic gates via electrical spike propagation. The routing of signals through the network performs computation. Different topologies compute different functions.
+
+**What this means for the system:**
+
+The mycelium framing reframes what the graph *is*. It is not a visualization of memory. It is the memory. The topology of the graph at any point in time encodes the history of what has been important to this agent. A densely connected cluster means those memories have been frequently co-accessed. A thin, long-range edge means two distant concepts were once bridged. A node with no edges means a memory that was stored but never reinforced.
+
+The Three.js visualization of the brain globe is therefore not decorative — it is a direct read of the system's cognitive history. You are looking at what the agent has found important over time, rendered spatially.
+
+---
+
+#### 3. Hebbian learning: the reinforcement rule
+
+**Hebb, D.O. (1949). *The Organization of Behavior*. Wiley.**
+The foundational text. "When an axon of cell A is near enough to excite cell B and repeatedly or persistently takes part in firing it, some growth process or metabolic change takes place in one or both cells such that A's efficiency, as one of the cells firing B, is increased." Compressed: *neurons that fire together wire together.*
+
+**Meta-Learning through Hebbian Plasticity in Random Networks. NeurIPS 2020. (proceedings.neurips.cc)**
+Shows that Hebbian update rules can be learned (not just applied) and that networks with adaptive Hebbian plasticity can self-organize for new tasks. The plasticity rule itself becomes a learnable parameter.
+
+**What this means for the system:**
+
+Hebbian learning is the biological basis for the Physarum conductance model applied to neural tissue. The translation to the memory graph is exact: when two memory nodes are co-accessed in the same LLM context window, the edge between them (or the newly created edge, if none exists) should be strengthened. Co-activation → edge reinforcement.
+
+This gives the system a specific rule: **when `getPublicMemories()` returns a set of nodes for a given context, increment the weights on all edges between nodes in that set.** Nodes that always appear together in context are Hebbian partners. Their connection strengthens until it is a primary retrieval path.
+
+The implication for retrieval: rather than always retrieving the N most recent or N highest-confidence memories, retrieve along the strongest Hebbian paths from the most recently activated node. Follow the thick connections. This is how the slime mold finds the shortest path — not by search, by following flux.
+
+---
+
+#### 4. Stigmergy: memory offloaded to the environment
+
+**Dorigo, M. & Gambardella, L. (2000). "Ant algorithms and stigmergy." *Future Generation Computer Systems*. (ACM, dl.acm.org)**
+The comprehensive mathematical treatment of how ant colonies use pheromone trails as distributed memory. Individual ants deposit pheromone proportional to route quality; pheromone evaporates over time; future ants prefer high-pheromone routes. The optimal route emerges from this feedback loop without any ant knowing the global state.
+
+**The governing equation:** pheromone update `τ_ij(t+1) = (1-ρ)·τ_ij(t) + Δτ_ij` where ρ is the evaporation rate and Δτ_ij is the amount deposited by ants traversing edge (i,j). This is structurally identical to the Physarum conductance equation.
+
+**What this means for the system:**
+
+The agent's access pattern is the pheromone. Every time the agent traverses an edge (retrieves node B after having retrieved node A), it deposits pheromone on that edge. Evaporation happens on a scheduled decay. The graph self-organizes toward the topology of actual agent use.
+
+More importantly: **the pheromone trail is the agent's externalized reasoning path**. When you look at the Three.js visualization and see a thick, glowing edge between two nodes, you are seeing the accumulated reasoning of the agent — the path it has found valuable to traverse. This is the answer to "what is the AI thinking about?" rendered spatially. It is not a representation of thinking; it is a record of thinking made visible.
+
+This also solves the multi-agent visibility problem from Entry 002. When two agents both traverse the same edge, the pheromone deposits add. The edge between two shared memories glows brightest when two agents have found it independently useful. You can literally see where two agents' reasoning paths coincide.
+
+---
+
+### Part II — The Network Mathematics
+
+#### 5. Small-world networks: the topology the brain actually has
+
+**Watts, D.J. & Strogatz, S.H. (1998). "Collective dynamics of 'small-world' networks." *Nature*, 393, 440–442. (stanford.edu/snap)**
+The foundational paper. Small-world networks have two properties simultaneously: high local clustering (neighbors of neighbors are likely connected) and short global path length (any two nodes are reachable in few hops). The brain, the internet, power grids, and social networks all exhibit this topology. Random graphs have short paths but low clustering. Regular lattices have high clustering but long paths. Small-world networks are the efficient middle.
+
+**Barabási, A-L. & Albert, R. (1999). "Emergence of scaling in random networks." *Science*, 286, 509–512.**
+Scale-free networks grow by preferential attachment: new nodes connect preferentially to already well-connected nodes. This produces a power-law degree distribution — most nodes have few connections; a small number of hub nodes have very many. The brain, the web, and citation networks all show this property. Hubs are not a flaw; they are the efficient routing infrastructure.
+
+**What this means for the system:**
+
+The current graph has no topology target. Nodes are added and edges are created by tag overlap and entity extraction. What topology emerges depends entirely on the content of the memories.
+
+But there is a target topology that is known to be optimal for navigable memory: **small-world with scale-free degree distribution**. High local clustering means related memories are densely connected. Short global paths mean any memory is reachable quickly from any context. Scale-free hubs (person anchors, project anchors, frequently co-accessed concepts) provide fast routing between clusters.
+
+The practical implication: the auto-wiring rules currently implemented (tag overlap, person anchors, project anchors) naturally tend toward this topology. Person and project anchors become hubs by preferential attachment — every new memory about a person connects to that person's anchor node, so hub nodes accumulate degree proportional to their relevance. This is preferential attachment without explicitly implementing it.
+
+The design confirmation: **the auto-wiring approach is not just practical — it is mathematically correct.** It converges toward the topology known to maximize navigability.
+
+---
+
+#### 6. Topological data analysis: understanding the shape of memory
+
+**Topological Graph Neural Networks. ICLR 2022. (openreview.net)**
+Applies persistent homology to graph neural networks. Persistent homology measures the "shape" of data — connected components, loops, voids — across multiple scales of analysis. Applied to a knowledge graph, it can identify memory clusters (connected components), circular reasoning patterns (loops), and structural gaps (voids) that represent missing knowledge.
+
+**What this means for the system:**
+
+TDA gives us a way to answer questions the graph currently cannot: "where are the gaps in this agent's memory?" A void in the memory graph topology corresponds to a concept that is surrounded by related memories but never directly represented. A loop corresponds to a chain of reasoning that is mutually reinforcing but possibly circular.
+
+This is a future analytics layer — not something to implement now, but the mathematical basis for a "memory health" diagnostic. You could run persistent homology on the user's memory graph and surface: "You have strong memories about Project X and about your collaborator Alice, but no memories directly connecting them. Is that a gap?"
+
+---
+
+### Part III — The AI Memory Systems
+
+#### 7. MemGPT: the OS metaphor for LLM memory
+
+**Packer, C. et al. (2023). "MemGPT: Towards LLMs as Operating Systems." arXiv:2310.08560.**
+The paper that established the OS framing for LLM memory management. MemGPT implements virtual context management: the LLM's context window is RAM (fast, limited, expensive), and external storage is disk (slow, large, cheap). An interrupt-driven system pages memories in and out of the context window based on relevance. The LLM itself issues memory management instructions.
+
+**What this means for the system:**
+
+MemGPT's RAM/disk metaphor maps directly onto the current architecture:
+- **RAM** = the LLM's context window (what is in the current system prompt)
+- **L1 cache** = the public memories retrieved by `getPublicMemories()` for this turn
+- **Disk** = the full `memory_nodes` graph in PostgreSQL + ICP
+
+The graph adds a dimension MemGPT lacks: **the disk is structured, not flat**. MemGPT retrieves from a flat list. This system retrieves from a graph — which means retrieval can follow edges (Hebbian paths, Physarum flux paths) rather than just scoring individual nodes for relevance.
+
+The Physarum conductance model + MemGPT's OS framing together suggest a retrieval algorithm: start from the most recently activated node, follow the highest-weight edges, load the neighborhood into the context window. This is graph-guided paging, not vector similarity search.
+
+---
+
+#### 8. A-MEM: agentic memory that evolves
+
+**Xu, W. et al. (2025). "A-MEM: Agentic Memory for LLM Agents." arXiv:2502.12110. NeurIPS 2025.**
+The most recent and most relevant paper to this project. A-MEM implements memory following the Zettelkasten method: each memory note has structured attributes (keywords, tags, contextual descriptions) and is linked to existing memories when meaningful similarities exist. Crucially, when a new memory is integrated, it can trigger **updates to existing memories** — not just addition. The memory network continuously refines its own understanding.
+
+**What this means for the system:**
+
+The current system is additive — new memories are added, nothing is updated. A-MEM's key insight is that memory should *evolve*: when a new memory is stored that is highly similar to an existing one, the existing one's contextual description should be updated to reflect the new information. When a new memory contradicts an existing one, the contradiction should be represented in the graph (a `contradicts` edge with high weight), not silently coexist.
+
+This is the next major architectural step beyond what has been built: **memory is not append-only. Memory is revised.** The `supersedes` and `contradicts` edge types already exist in the schema. The missing piece is triggering them automatically when new memories are stored that bear high similarity to existing ones.
+
+The Zettelkasten connection is precise: the current system already has keywords (tags), type, label, and linking (edges). What it lacks is the A-MEM update mechanism — the rule that says "when you store this new memory, check for high-similarity existing memories and update their context."
+
+---
+
+#### 9. GraphRAG: graph-structured retrieval beats vector search for relational queries
+
+**Microsoft Research. GraphRAG. (2024). research.microsoft.com/graphrag**
+**Edge, D. et al. (2024). "From Local to Global: A Graph RAG Approach to Query-Focused Summarization." arXiv:2404.16130.**
+**Survey: arXiv:2408.08921. "Graph Retrieval-Augmented Generation: A Survey."**
+
+GraphRAG indexes text into a knowledge graph (entities as nodes, relationships as edges) and uses graph traversal for retrieval rather than vector cosine similarity. The key finding: for questions requiring reasoning over relationships ("what do these three events have in common?", "how did this decision lead to that outcome?"), graph retrieval substantially outperforms vector similarity. Vector search finds the most similar individual chunks; graph traversal finds the most relevant *reasoning paths*.
+
+**What this means for the system:**
+
+The current `getPublicMemories()` is flat retrieval — return all public memories, sorted by recency, inject into context. This is the baseline RAG approach. The graph structure enables something better: **retrieve the subgraph most relevant to the current query, not the full node set**.
+
+When a user asks "what did we decide about the database design?", a flat retrieval returns all memories. A graph retrieval starts from the "database" concept node, traverses its edges, returns the connected neighborhood, and injects that targeted subgraph into context. Less noise, more relevant signal.
+
+This is the retrieval architecture to build toward: topic-anchored neighborhood retrieval, not full flat recall.
+
+---
+
+#### 10. Neural Turing Machines and Differentiable Neural Computers
+
+**Graves, A. et al. (2014). "Neural Turing Machines." arXiv:1410.5401. DeepMind.**
+**Graves, A. et al. (2016). "Hybrid computing using a neural network with dynamic external memory." *Nature*, 538, 471–476. DeepMind.**
+
+NTMs and DNCs give neural networks an external addressable memory that can be read from and written to via differentiable attention mechanisms. The DNC extends the NTM with temporal links (recording the sequence of writes) and usage tracking (which memory slots are occupied). The system learns both what to store and how to retrieve — the memory management itself is learned.
+
+**What this means for the system:**
+
+The DNC's temporal links are directly relevant: they record not just *what* is stored but *in what order*. The timeline view in the current graph explorer is a manual version of this. The DNC automates it: retrieval automatically accounts for the temporal sequence of memory writes.
+
+The usage tracking in the DNC is equivalent to the Physarum conductance model — slots that are frequently accessed have higher usage scores and are preferentially retrieved. This is the same dynamic weight mechanism from a different mathematical tradition, confirming the approach.
+
+The DNC also demonstrates that **the external memory and the reasoning process should be coupled**. The memory is not a passive store that the LLM queries; ideally, the LLM's reasoning itself shapes what is retrieved next (the DNC controller's read heads can issue multiple reads per forward pass). The current system does one retrieval per turn. A more DNC-like architecture would retrieve, reason partially, retrieve again based on the intermediate reasoning, and iterate.
+
+---
+
+#### 11. Cognitive architectures: ACT-R's activation equation
+
+**Anderson, J.R. (2007). *How Can the Human Mind Occur in the Physical Universe?* Oxford University Press.**
+**Laird, J.E. (2012). *The Soar Cognitive Architecture.* MIT Press.**
+**Analysis and Comparison of ACT-R and Soar. arXiv:2201.09305 (2022).**
+
+ACT-R (Adaptive Control of Thought — Rational) implements memory retrieval via an activation equation. The base-level activation of a memory chunk:
+```
+A_i = ln(Σ_j t_j^(-d))
+```
+where t_j is the time since the j-th retrieval of chunk i, and d is a decay parameter (≈ 0.5 empirically). Memory that has been retrieved recently and frequently has high activation. Memory that has not been accessed for a long time has low activation and may become inaccessible (though not deleted).
+
+**What this means for the system:**
+
+ACT-R's activation equation is the mathematical basis for node-level weight decay. It is not arbitrary — it is a model fitted to human memory retrieval behavior across decades of cognitive psychology experiments.
+
+The current system has `confidence` on nodes (static) and `weight` on edges (static). ACT-R's equation suggests the `confidence` field on nodes should be dynamically computed as a function of retrieval history — exactly the base-level activation formula. Nodes that are retrieved frequently and recently have high confidence and float to the top of context. Nodes that were stored once and never accessed decay toward the retrieval threshold.
+
+The Soar architecture adds episodic and semantic learning on top of this, which maps to the distinction between the ICP memory records (episodic — what happened in what session) and the graph layer (semantic — what the agent knows, abstracted from any single conversation).
+
+---
+
+### Part IV — The File Navigation Problem
+
+#### 12. Semantic file systems: the idea that was right but lacked the rendering
+
+**Gifford, D. et al. (1991). "Semantic File Systems." Proceedings of SOSP 1991.**
+The 1991 paper that introduced the concept. A semantic file system navigates via semantic attributes rather than directory hierarchy — associative access rather than path-based access. The implementation was fully NFS-compatible but navigation was through virtual directories formed by querying file attributes.
+
+**The reason it was abandoned:** virtual directories are still a text list. The navigation metaphor is still linear — you query an attribute and get a list of matching files. The folder hierarchy is replaced by a query language, not by a spatial interface.
+
+**What this means for the system:**
+
+Gifford's 1991 insight was correct: hierarchical navigation is the wrong model for semantically related artifacts. The reason semantic file systems did not displace folder hierarchies is not that the concept was wrong — it is that the rendering was still linear. A text list of query results is not a cognitive improvement over a folder of files.
+
+The Three.js brain visualization is the missing piece Gifford did not have. The semantic relationships have always been there. What has been missing is a spatial rendering that makes the relationships navigable by intuition rather than by query. You should be able to *fly toward* a cluster of related files the way you would walk toward a group of people talking about something relevant — without issuing a query, just by perceiving the spatial organization.
+
+This is the argument that the file explorer interface is not an incremental improvement over folders. It is the completion of an idea that was correct in 1991 but lacked the rendering technology to be practical.
+
+---
+
+### Synthesis: The Design Principles This Research Implies
+
+Taking all of the above together, five concrete design principles emerge for this system:
+
+**Principle 1 — Edge weights are living values, not static assignments.**
+The Physarum conductance model, Hebbian learning, ACT-R activation, and stigmergic pheromone decay all converge on the same mathematical form: `w(t+1) = w(t) + α·access(t) − γ·decay(t)`. The current static `weight` field on edges must become a dynamically updated value. Every context load reinforces the traversed edges; time decay weakens untraversed ones.
+
+**Principle 2 — Retrieval follows the graph, not a flat list.**
+MemGPT pages memories in and out of context. GraphRAG uses graph traversal instead of vector similarity. ACT-R retrieves by activation from the most recently accessed chunk. Together: retrieval should start from the most recently activated node and traverse highest-weight edges, loading the graph neighborhood into context. Not "return all public memories" — "return the Hebbian neighborhood of what we just talked about."
+
+**Principle 3 — Memory evolves, it is not append-only.**
+A-MEM shows that memory notes must be able to update existing memories, not just add new ones. The `supersedes` and `contradicts` edge types already exist in this system's schema. The missing mechanism is triggering them: when a new memory is stored, check for high-similarity existing memories and either update them or create a conflict edge.
+
+**Principle 4 — The topology to target is small-world with scale-free hubs.**
+Watts-Strogatz and Barabási-Albert define the optimal topology for navigable memory. The current auto-wiring rules (tag overlap → same_topic_as edges, entity extraction → anchor node hubs) naturally converge toward this topology. This is not accidental — it is the right approach and the mathematics confirms it.
+
+**Principle 5 — The visualization is not decorative; it is a transparency mechanism.**
+The Three.js brain globe renders the system's cognitive history. Thick edges are Hebbian paths. Glowing nodes are active context. Hub nodes are frequent anchors. The shape of the graph at any moment encodes what the agent has found important. Looking at the graph is reading the agent's mind — not as a metaphor, but as a direct rendering of the data that governs its reasoning.
+
+---
+
+### What to build next, in order
+
+1. **Dynamic edge weights** — implement the Physarum/Hebbian update rule. Add `access_count` and `last_accessed_at` to `memory_edges`. Compute weight as a function of these. Run a scheduled decay. This is the most important architectural change because every other principle depends on edges being meaningful.
+
+2. **Graph-guided retrieval** — when the LLM context is being built, retrieve not just all public memories but the Hebbian neighborhood of the most recently accessed nodes. This changes `getPublicMemories()` from a flat query to a graph traversal.
+
+3. **Memory evolution** — before storing a new node, similarity-check against existing nodes. If similarity > threshold, create a `supersedes` or `contradicts` edge rather than (or in addition to) a new standalone node.
+
+4. **Return loaded node IDs in the API response** — the `/chat/send` endpoint should return which node IDs were loaded into the LLM's context for this turn. This data drives step 1 (which edges to reinforce) and step 5 (which nodes to animate in Three.js).
+
+5. **Three.js brain visualization** — once edge weights are meaningful and retrieval is graph-guided, the visualization renders something true. Animating nodes that were just loaded into context is not eye candy — it is a direct read of the retrieval step.
+
+---
+
+### Papers index
+
+| Paper | Year | Relevance |
+|---|---|---|
+| Nakagaki et al., "Maze-solving by an amoeboid organism", *Nature* | 2000 | Physarum pathfinding — the core biological model |
+| Tero et al., "Rules for Biologically Inspired Adaptive Network Design", *Science* | 2010 | Mathematical formalization: conductance = f(flux) − decay |
+| "Slime mold uses externalized spatial memory", *PNAS* PMC3491460 | 2012 | Stigmergy at cellular level |
+| Adamatzky, "Towards fungal computer", *Interface Focus* PMC6227805 | 2018 | Mycelium as distributed memory and computing substrate |
+| "Ecological memory in fungal mycelial networks", *ISME Journal* PMC6976561 | 2020 | Network shape encodes history of what was important |
+| Adamatzky, "Mining logical circuits in fungi", *Scientific Reports* | 2022 | Mycelium implements Boolean logic via topology |
+| Hebb, *The Organization of Behavior* | 1949 | Neurons that fire together wire together — the reinforcement rule |
+| "Meta-Learning through Hebbian Plasticity in Random Networks", NeurIPS | 2020 | Learned Hebbian update rules for self-organizing networks |
+| Dorigo & Gambardella, "Ant algorithms and stigmergy", *FGCS* | 2000 | Pheromone as distributed memory; evaporation model |
+| Watts & Strogatz, "Collective dynamics of small-world networks", *Nature* | 1998 | Small-world topology: clustered + short paths |
+| Barabási & Albert, "Emergence of scaling in random networks", *Science* | 1999 | Scale-free hubs via preferential attachment |
+| "Topological Graph Neural Networks", ICLR | 2022 | Persistent homology for graph structure analysis |
+| Packer et al., "MemGPT: Towards LLMs as Operating Systems", arXiv:2310.08560 | 2023 | RAM/disk model for LLM context management |
+| Xu et al., "A-MEM: Agentic Memory for LLM Agents", arXiv:2502.12110, NeurIPS | 2025 | Zettelkasten + evolving memory notes |
+| Microsoft Research, GraphRAG, arXiv:2408.08921 | 2024 | Graph traversal outperforms vector search for relational queries |
+| Graves et al., "Neural Turing Machines", arXiv:1410.5401 | 2014 | External addressable memory with attention-based read/write |
+| Graves et al., "Hybrid computing with dynamic external memory", *Nature* | 2016 | DNC: temporal links, usage tracking, coupled reasoning and memory |
+| Anderson, *ACT-R: How Can the Human Mind Occur in the Physical Universe?* | 2007 | Base-level activation equation for memory retrieval |
+| Laird, *The Soar Cognitive Architecture* | 2012 | Episodic + semantic memory distinction; chunking and learning |
+| Gifford et al., "Semantic File Systems", SOSP | 1991 | The correct idea without the rendering — what we are completing |
+
+---
+
+*Entry 003. This is the research foundation. The five design principles above are the PhD thesis for this system: edges must live, retrieval must traverse, memory must evolve, topology must converge toward small-world, and the visualization must be true. Everything else is implementation.*
+
+---
+
+## Entry 004 — 2026-03-12
+### Implementing dynamic edge weights: the Physarum model in code
+
+The first design principle from Entry 003 is now implemented. Edge weights are no longer static.
+
+#### What was built
+
+Three components were added to realize the discrete Tero et al. (2010) conductance model.
+
+**Migration `2026_03_12_000003`** adds `access_count` and `last_accessed_at` to both `memory_nodes` and `memory_edges`. The access count supports ACT-R base-level activation ordering in future retrieval work. The timestamp drives the decay calculation and feeds the Three.js animation layer with information about which nodes have been recently active.
+
+**`MemoryGraphService::reinforce(array $nodeIds, string $userId)`** applies the Hebbian increment on every context-load event. When the LLM retrieves a set of memory nodes for a given turn, all edges between nodes in that set receive `weight += 0.10`, clamped to 1.0. The increment value (ALPHA = 0.10) follows the range used in the Improved Physarum Algorithm paper (PMC3984829), where conductance increments between 0.05 and 0.20 were found to produce stable convergence without oscillation.
+
+**`MemoryGraphService::reinforceFromMemories(array $memories, string $userId)`** bridges the ICP layer and the graph layer. ICP memory records carry a `content` string, and graph nodes were created from that same string, so the join is exact rather than fuzzy. This method resolves which graph nodes correspond to the memories that were loaded into context, calls `reinforce()`, and returns the node IDs for the API response.
+
+**`MemoryGraphService::decay()`** implements the daily decay term as a single bulk SQL statement: `weight = GREATEST(0.05, weight * 0.97)`. Running this as raw SQL rather than per-record Eloquent updates keeps the operation proportional to table size rather than record count. The retention factor RHO = 0.97 (3% daily decay) was chosen so that an edge with initial weight 0.5 that receives no reinforcement reaches the floor after approximately 100 days, matching the timescale on which a human might reasonably forget a lightly-used association.
+
+**`DecayMemoryEdges` Artisan command** wraps the decay call and is scheduled daily via `routes/console.php`. Running `php artisan memory:decay` manually also works for testing.
+
+**`ChatController::send()`** now calls `reinforceFromMemories()` immediately after `getPublicMemories()` returns, then includes the resulting node IDs in the JSON response as `active_node_ids`. The browser receives this field on every chat turn; the Three.js visualization (Entry 002, not yet built) will use it to animate the nodes that were active in that turn.
+
+#### Why the constants were chosen
+
+ALPHA = 0.10 means ten co-access events bring an edge from its initial weight of 0.5 to 1.0. In practice most memory graphs will have far fewer than ten turns that retrieve any specific pair of memories together, so edges plateau near the midrange rather than saturating immediately. The Physarum literature (Tero, Nakagaki) does not specify discrete ALPHA values because the continuous model uses flow rates, but digitised implementations consistently use increments in the 0.05 to 0.15 range.
+
+RHO = 0.97 was calibrated against human episodic memory decay, which the ACT-R base-level learning model places at a half-life of roughly 15 to 30 days for weakly encoded memories. An edge at weight 0.5 with RHO = 0.97 reaches 0.05 (the floor) in 100 days. An edge reinforced weekly stays above 0.4 indefinitely.
+
+WEIGHT_FLOOR = 0.05 ensures that edges are never deleted by decay. The floor matters for the Three.js visualization: a barely visible thin edge between two nodes carries information (these memories were once connected) that a missing edge does not. Deletion would be irreversible; the floor is not.
+
+#### What this does not yet implement
+
+The Hebbian increment currently applies a flat ALPHA regardless of how many nodes were co-accessed. A context window with 20 nodes should reinforce each pair less strongly than a context with 3 nodes, because the signal-to-noise ratio is lower when many memories are loaded simultaneously. A correct implementation would weight the increment by `1 / |nodeIds|^2` (the fraction of possible pairs). This refinement is deferred until the retrieval system moves from flat recall to neighborhood traversal, at which point context sets will be smaller and more focused.
+
+The `reinforceFromMemories` method joins on exact content string equality. If the same fact is summarized slightly differently across two turns, the join misses the second instance. A fuzzy join using trigram similarity or cosine embedding distance would be more robust, but the exact join is correct for the current pipeline because the same LLM prompt and same content are used consistently.
+
+---

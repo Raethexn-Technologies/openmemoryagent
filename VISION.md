@@ -4,6 +4,8 @@
 
 This document is the research record for OpenMemoryAgent. It is not a setup guide (see README.md) and not a feature list. It captures the design questions driving the project, what was actually learned building it, what the implementation honestly proves, and where the hard problems remain.
 
+For the running implementation log — what was discovered building specific features, security findings, and what remains unresolved — see [DEVLOG.md](./DEVLOG.md). VISION.md is the stable research position; DEVLOG.md is the honest record of how it got there.
+
 ---
 
 ## The Core Question
@@ -194,6 +196,27 @@ These are not near-term goals; they are the research trajectory the design point
 - Memory portability: export principal and records, import into another application that uses the same canister interface
 - Verifiable summarization: a commitment scheme that lets users audit the relationship between conversation and stored summary
 - Cross-device sync via an encrypted key vault, or replace Ed25519KeyIdentity with Internet Identity entirely
+
+---
+
+## The Larger Direction: AI Memory as a Living 3D Interface
+
+The graph memory layer built in this project points toward a larger interface paradigm that is worth naming explicitly.
+
+The current flat graph explorer (D3, 2D canvas) is the right foundation but not the destination. The destination is a Three.js 3D globe — the AI's brain as a navigable spatial object — where:
+
+- Memory nodes live on and inside a sphere, positioned by semantic proximity not folder hierarchy
+- Node geometry and animation encode type, sensitivity, recency, and connection strength
+- The globe is *live*: when the AI reads memory to build a response, those nodes light up in sequence, making the agent's context load visible in real time
+- When a new memory is written, the node materializes and its edges wire in as you watch
+
+The cross-agent extension is where this becomes a fundamentally new kind of tool. Multiple agents working across projects are visible simultaneously as distinct activity regions on the globe. Shared memory nodes — facts referenced by more than one agent — glow between the regions. You can watch one agent's reasoning touch a node that another agent's reasoning has touched. The multi-agent memory topology becomes inspectable rather than invisible.
+
+The file explorer connection is the deepest claim. The linear folder hierarchy is a 1970s interface applied to a 2025 problem. A folder tree is sequential, flat at each level, navigationally one-directional, and structurally oblivious to the semantic relationships between files. A 3D memory graph replaces folder hierarchy with spatial position, simultaneous visibility across projects, associative traversal by following edges, and relationship as a first-class UI primitive.
+
+The memory graph already built is the data layer for this. The 3D visualization is the experience layer. They are the same system at different levels of rendering.
+
+See DEVLOG Entry 002 for the full technical breakdown of what building this requires.
 
 ---
 

@@ -81,6 +81,22 @@ Things outside scope include encryption at rest, memory sharing between users, r
 
 ---
 
+## Documentation writing standard
+
+All markdown in this repository follows a plain research writing style. The rules apply to DEVLOG.md, VISION.md, README.md, and this file.
+
+No em-dashes. Use a comma, semicolon, or rewrite the sentence structure instead.
+
+No corporate or marketing language. Words like "leverage", "robust", "scalable", "seamless", "streamline", "empower", and "next-generation" do not belong in a research document. State what the system does; do not describe it as impressive.
+
+No sentence fragments. Every sentence must contain at least five words and a complete grammatical thought.
+
+No repetition. If a point was made in the preceding paragraph, it does not need to be restated in different phrasing.
+
+Write as if explaining the system to another researcher who will read critically. Every sentence should carry information that the reader could not infer from the surrounding context.
+
+---
+
 ## Reporting problems
 
 Open a GitHub issue and include what you expected to happen, what actually happened, whether you were running in mock or live mode, and any relevant output from `app/storage/logs/`.
