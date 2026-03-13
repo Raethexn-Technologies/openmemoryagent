@@ -702,6 +702,86 @@ That decision should be made deliberately before implementing, because it change
 
 ---
 
+## Entry 009 — 2026-03-12
+### Multi-agent simulation layer: collective Physarum with trust-weighted edge reinforcement
+
+#### What was built
+
+The system now supports multiple agents, each with its own graph partition, whose Physarum dynamics interact through shared memory edges when they hold nodes derived from the same content.
+
+**`agents` table** stores each agent with an `owner_user_id` (the human who created it), a `graph_user_id` (the partition key used in `memory_nodes` and `memory_edges`), a `name`, a `trust_score` between 0.0 and 1.0, and access tracking. The agent's graph partition is created as a standard user_id prefix (`agent_{uuid}`) so all existing graph operations work on it without modification.
+
+**`shared_memory_edges` table** stores cross-agent edges keyed by `(agent_a_id, agent_b_id, content_hash)` with a canonical ordering (lower UUID as `agent_a`) to prevent duplicate edges in both directions. The edge carries a `weight`, an `access_count`, and `last_accessed_at`. The `content_hash` is SHA-256 of the memory content string, which is the correct join key because graph nodes are created from the same content string that ICP stores.
+
+**`MultiAgentGraphService`** manages three operations:
+
+`reinforceShared(nodeIds, agent)` is the core collective update. After an agent reinforces its local graph, this method finds other agents under the same owner whose graph partitions contain nodes with the same content hash, and increments the shared edge weight by `SHARED_ALPHA * agent.trust_score`. An agent with `trust_score = 1.0` applies the full increment of 0.06. An agent with `trust_score = 0.0` applies nothing. The canonical form of the Physarum update is preserved: `w(t+1) = min(1.0, w(t) + SHARED_ALPHA * trust)`.
+
+`retrieveCollectiveContext(agent)` retrieves the agent's personal Physarum neighbourhood (via `MemoryGraphService::retrieveContext`) then annotates each node with a collective weight derived from the sum of shared edge weights from peer agents, multiplied by each peer's trust score. The result is sorted by collective weight descending, so nodes the collective considers important appear first in the LLM context window.
+
+`seedFromOwner(agent)` copies the owner's most recent public memory nodes into the agent's graph partition. This is the setup step for simulation: create agents, seed them from the same memory corpus, then run reinforcement and observe how collective weights develop as the agents access different subsets of that corpus.
+
+**`AgentController`** exposes the full simulation API: create, seed, simulate individual agents, and simulate all agents in a single request. The `simulateAll` endpoint runs `retrieveCollectiveContext`, `reinforce`, and `reinforceShared` for every agent under the current user and returns the results side-by-side with the updated shared edge summary.
+
+**`Pages/Agents/Index.vue`** renders the simulation UI as three regions: the left panel lists agents with trust score sliders and seed/run controls; the center shows agent result columns side-by-side with nodes highlighted when they appear in more than one agent's active set; the right panel shows all shared edges sorted by collective weight, with a progress bar representing the current weight and a reinforcement count.
+
+#### Why SHARED_ALPHA is 0.06 rather than 0.10
+
+The personal ALPHA of 0.10 was calibrated so that ten co-access events bring an edge from 0.5 to 1.0 for a single agent. Collective reinforcement accumulates from multiple agents simultaneously. If four agents each apply full ALPHA, the shared edge would saturate at ten events across the group rather than ten per agent. SHARED_ALPHA = 0.06 means that a fully trusted agent contributes 60% of the personal rate to the collective, which prevents collective saturation at agent populations larger than two without requiring the increment to be dynamically divided.
+
+The correct long-term fix is to divide SHARED_ALPHA by `sqrt(n_agents)` where `n_agents` is the number of agents in the collective, which would give the Physarum organism analogy correctly: each organism contributes a flow rate, and the combined conductance is the sum. This refinement is deferred to when agent populations are large enough to make the saturation effect visible.
+
+#### The MemoryGraft resistance mechanism
+
+A trust score of 0.0 means the agent can still create shared edges (the initial weight is applied on first contact), but contributes zero increment on all subsequent reinforcements. An attacker who registers a new agent and attempts to pump the shared graph toward a poisoned node achieves an initial shared edge at weight 0.3 but cannot increase that weight further without being granted a higher trust score by the owner.
+
+The owner's trust score adjustment is the primary MemoryGraft defense in the current implementation. A future extension would make trust scores computable from verified contribution history: if an agent's retrieved memories correlate with accurate downstream responses, its trust score increases. This is the ACT-R base-level analogy at the collective level: agents that produce accurate associations earn higher activation in the collective network.
+
+ICP's `msg.caller` enforcement is the cryptographic precondition for this. When all memory writes carry a verifiable principal, the contribution history is attributable and tamper-proof, which is what makes a reputation-based trust score computable at all.
+
+#### What the simulation exposes
+
+Running the simulation with two agents seeded from the same memory corpus and different trust scores produces an observable result: the higher-trust agent's preferred nodes (the ones its Physarum weights have elevated through personal reinforcement) acquire higher collective weights faster than the lower-trust agent's nodes. After several simulation runs, the shared edge topology reflects a weighted combination of both agents' individual relevance judgements, not a simple average.
+
+This is the collective intelligence property the December 2024 paper identified as requiring cognitive infrastructure. The infrastructure is the personal Physarum graph. The collective signal emerges from the trust-weighted aggregation of individual signals, which is what the shared edge layer now computes.
+
+---
+
+## Entry 008 — 2026-03-12
+### Graph-guided retrieval: replacing flat recall to make edge weights meaningful
+
+#### The problem with flat recall
+
+Entry 005 identified the core signal quality problem. `IcpMemoryService::getPublicMemories()` returns every public memory record, and `reinforceFromMemories()` was called on that entire set. If a user has 30 public memories, all 30 nodes are marked as co-accessed on every chat turn, and every edge between them receives the ALPHA increment. Over time, all edge weights converge toward the same high value because the co-access signal contains no information about which specific memories were relevant to any specific query.
+
+The Physarum organism analogy collapses at this point. In the biological model, flux increases only through tubes that connect to food sources. Injecting equal flux through every tube simultaneously destroys the organism's ability to find the shortest path because all conductances converge to the same value. Flat recall does exactly this to the memory graph.
+
+#### The fix: seed selection and neighbourhood traversal
+
+`MemoryGraphService::retrieveContext(userId, limit)` replaces flat recall as the primary context source. The method proceeds in two stages.
+
+**Seed selection.** The 60 most recently created public nodes for the user are loaded as candidates. For each candidate, the sum of weights on all connected edges is computed. Nodes whose edges have accumulated high total weight are selected as seeds, up to a count of four. These are the nodes the Physarum model considers most important: they have been co-accessed with many other nodes many times, and their combined edge weights reflect that history. Recency provides the tiebreaker when two nodes have equal edge weight.
+
+**Neighbourhood traversal.** BFS from the seed set collects public neighbour nodes in edge-weight-descending order. At each hop, the edges from the current frontier are fetched, ordered by weight descending, and the neighbours are added to the collected set. The traversal stops when the collected set reaches the limit or no new neighbours exist. Only public nodes pass the sensitivity filter at the neighbour stage.
+
+**Reinforcement.** The returned node IDs are passed directly to `reinforce()`. Only the retrieved neighbourhood is reinforced, so the ALPHA increment applies only to edges between nodes the graph considers relevant. Over time, the Physarum weights diverge: edges within the retrieved neighbourhood accumulate weight, and edges between rarely-co-retrieved nodes decay toward the floor.
+
+#### The cold start problem and fallback
+
+A new user has no graph nodes. `retrieveContext()` returns an empty array. The fallback in `ChatController::send()` detects the empty result and calls `IcpMemoryService::getPublicMemories()` instead, which is the original flat recall path. This keeps the first few turns functional while the graph is being built from incoming memories.
+
+The cold start ends when the first memory is stored and its graph node is created. On the next turn, `retrieveContext()` finds that node as a candidate and returns it as a seed. The first edge is created when a second memory with overlapping tags is stored and `wireTagEdges()` wires them. From that point, the Physarum dynamics are active and flat recall is no longer needed.
+
+There is a weak signal window: in the first 5 to 10 turns after the graph is non-empty but before multiple reinforcement cycles have run, the edge weights are approximately uniform (all at their initial values). The seed selection falls back to recency ordering, which is correct: the most recently created memories are the most contextually relevant in the early graph.
+
+#### What changes in the response
+
+`active_node_ids` in the `/chat/send` response now contains the IDs of the graph-guided neighbourhood nodes rather than the IDs of the full ICP memory set. The Three.js visualization will use these IDs to animate the specific nodes that influenced the current response, which is a more precise signal than the previous version where all public memories were animated on every turn.
+
+The `IcpMemoryService::getPublicMemories()` call is absent from the hot path once the graph has nodes. ICP is still the source of record for the raw memory content (via the canister), but the retrieval decision is now made by the PostgreSQL graph. This is the architectural shift Entry 005 identified as necessary: the graph becomes the primary retrieval index, and ICP becomes the durable ownership record rather than the active recall layer.
+
+---
+
 ## Entry 007 — 2026-03-12
 ### The hivemind pivot: what Kinic did not build and what remains genuinely open
 
