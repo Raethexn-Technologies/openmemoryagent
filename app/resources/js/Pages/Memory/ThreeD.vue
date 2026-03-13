@@ -223,11 +223,10 @@ let lineSegments = null
 let heatSpheres = [] // {mesh, clusterId}
 let nodePositions = new Map()   // node_uuid -> THREE.Vector3
 let nodeIndexMap = new Map()    // node_uuid -> instancedMesh index
+let nodeScaleMap = new Map()    // node_uuid -> base render scale
 let edgeIndexMap = new Map()    // edge_id -> byte offset in color Float32Array
 let colorAttr = null            // reference to lineSegments color BufferAttribute
-
-// ── Agent partition data (fetched per agent's graph_user_id) ──────────────────
-let partitionData = {} // graph_user_id -> {nodes, edges}
+let animationFrameId = null
 
 // ── Colors ────────────────────────────────────────────────────────────────────
 const NODE_TYPE_COLORS = {
@@ -273,34 +272,47 @@ const scrubberLabel = computed(() => {
 })
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
+
+/**
+ * Fetch all graph partitions (personal + one per agent) in parallel.
+ *
+ * Returns:
+ *   partitions   - Map<partitionId, {nodes, edges}>
+ *   contentMap   - Map<contentString, Set<partitionId>> for shared-node detection
+ *   sharedEdges  - raw shared-edge summary from /api/agents/shared-edges
+ */
 async function fetchPartitions() {
-  // Fetch the personal user graph
-  const res = await fetch('/api/graph?sensitivity[]=public')
-  const data = await res.json()
-  partitionData['__personal__'] = data
-
-  // Fetch each agent's partition
+  const requests = [fetch('/api/graph?sensitivity[]=public')]
   for (const agent of props.agents) {
-    // Agent graphs are partitioned by graph_user_id but served from the same endpoint
-    // using the session. We request their data by fetching as normal (agent graph data
-    // is served relative to each agent's graph_user_id, not session user_id).
-    // For now we reuse the same /api/graph but agents page shows agent-specific data.
-    // The 3D page shows partitions based on the agent graph data from /api/agents simulate.
-    partitionData[agent.id] = { nodes: [], edges: [] }
+    requests.push(fetch(`/api/agents/${agent.id}/graph`))
+  }
+  requests.push(fetch('/api/agents/shared-edges'))
+
+  const responses = await Promise.all(requests)
+  const payloads = await Promise.all(responses.map(r => r.json()))
+
+  const personalData = payloads[0]
+  const partitions = new Map()
+  partitions.set('__personal__', personalData)
+
+  for (let i = 0; i < props.agents.length; i++) {
+    partitions.set(props.agents[i].id, payloads[i + 1])
   }
 
-  // Collect all unique nodes across all partitions
-  const allNodeMap = new Map()
+  const sharedEdges = payloads[payloads.length - 1]?.shared_edges ?? []
 
-  // Add personal nodes
-  for (const node of (partitionData['__personal__']?.nodes ?? [])) {
-    allNodeMap.set(node.id, { ...node, partitions: ['__personal__'] })
+  // Build content -> [partitionIds] map for shared-node detection.
+  // Nodes with identical content strings across partitions represent
+  // the same underlying memory appearing in multiple agent subgraphs.
+  const contentMap = new Map()
+  for (const [partitionId, data] of partitions) {
+    for (const node of (data.nodes ?? [])) {
+      if (!contentMap.has(node.content)) contentMap.set(node.content, new Set())
+      contentMap.get(node.content).add(partitionId)
+    }
   }
 
-  // Build content-hash map for shared node detection
-  const contentToAgentIds = new Map() // content -> [agentIds]
-
-  return { allNodeMap, contentToAgentIds }
+  return { partitions, contentMap, sharedEdges }
 }
 
 async function fetchClusters() {
@@ -334,6 +346,74 @@ async function fetchSnapshotAt(index) {
   recolorHeatSpheres(historicalClusters)
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function randomOnSphere(r) {
+  const theta = Math.random() * 2 * Math.PI
+  const phi = Math.acos(2 * Math.random() - 1)
+  return new THREE.Vector3(
+    r * Math.sin(phi) * Math.cos(theta),
+    r * Math.sin(phi) * Math.sin(theta),
+    r * Math.cos(phi),
+  )
+}
+
+function disposeScene() {
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId)
+    animationFrameId = null
+  }
+
+  for (const { mesh } of heatSpheres) {
+    scene?.remove(mesh)
+    mesh.geometry.dispose()
+    mesh.material.dispose()
+  }
+  heatSpheres = []
+
+  if (lineSegments) {
+    scene?.remove(lineSegments)
+    lineSegments.geometry.dispose()
+    lineSegments.material.dispose()
+    lineSegments = null
+  }
+
+  if (instancedMesh) {
+    scene?.remove(instancedMesh)
+    instancedMesh.geometry.dispose()
+    instancedMesh.material.dispose()
+    instancedMesh = null
+  }
+
+  if (controls) {
+    controls.dispose()
+    controls = null
+  }
+
+  if (renderer) {
+    const canvas = renderer.domElement
+    renderer.dispose()
+    if (canvas.parentNode === canvasContainer.value) {
+      canvasContainer.value.removeChild(canvas)
+    }
+    renderer = null
+  }
+
+  scene = null
+  camera = null
+  clock = null
+  colorAttr = null
+  nodePositions = new Map()
+  nodeIndexMap = new Map()
+  nodeScaleMap = new Map()
+  edgeIndexMap = new Map()
+}
+
+async function rebuildScene() {
+  loading.value = true
+  disposeScene()
+  await buildScene()
+}
+
 // ── Scene construction ────────────────────────────────────────────────────────
 async function buildScene() {
   // Renderer
@@ -349,122 +429,186 @@ async function buildScene() {
   camera.position.set(0, 60, 160)
   camera.lookAt(0, 0, 0)
 
-  // Controls
   controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
   controls.dampingFactor = 0.08
 
-  // Lights
   scene.add(new THREE.AmbientLight(0x334155, 1.2))
   const dirLight = new THREE.DirectionalLight(0xffffff, 0.5)
   dirLight.position.set(0, 100, 50)
   scene.add(dirLight)
 
-  // Clock for animations
   clock = new THREE.Clock()
 
-  // Load graph data
-  const graphRes = await fetch('/api/graph?sensitivity[]=public')
-  const graphData = await graphRes.json()
-  const nodes = graphData.nodes ?? []
-  const edges = graphData.edges ?? []
+  // ── Fetch all partition data ──────────────────────────────────────────────
+  const { partitions, contentMap, sharedEdges } = await fetchPartitions()
 
-  totalNodeCount.value = nodes.length
+  // Count all unique nodes across all partitions
+  let nodeCount = 0
+  for (const data of partitions.values()) {
+    nodeCount += (data.nodes ?? []).length
+  }
+  totalNodeCount.value = nodeCount
 
-  if (nodes.length === 0) {
+  if (nodeCount === 0) {
     loading.value = false
     animate()
     return
   }
 
-  // Compute agent centroids (ring layout in XZ plane)
+  // ── Compute centroids ─────────────────────────────────────────────────────
+  // Agent partitions arranged in a ring in the XZ plane.
+  // Personal graph sits above origin on the Y axis so it is visually distinct.
   const agentCount = props.agents.length
   const agentCentroids = {}
+  const ringRadius = agentCount > 0 ? 80 : 0
   props.agents.forEach((agent, i) => {
     const angle = (2 * Math.PI * i) / agentCount
     agentCentroids[agent.id] = new THREE.Vector3(
-      80 * Math.cos(angle),
+      ringRadius * Math.cos(angle),
       0,
-      80 * Math.sin(angle),
+      ringRadius * Math.sin(angle),
     )
   })
-
-  // Personal graph centroid (origin if no agents, or offset if agents exist)
   const personalCentroid = agentCount > 0
-    ? new THREE.Vector3(0, 30, 0)
+    ? new THREE.Vector3(0, 50, 0)
     : new THREE.Vector3(0, 0, 0)
 
-  // Assign 3D positions to nodes
-  nodes.forEach((node) => {
-    const theta = Math.random() * 2 * Math.PI
-    const phi = Math.acos(2 * Math.random() - 1)
-    const r = 20
-    const offset = new THREE.Vector3(
-      r * Math.sin(phi) * Math.cos(theta),
-      r * Math.sin(phi) * Math.sin(theta),
-      r * Math.cos(phi),
-    )
-    nodePositions.set(node.id, personalCentroid.clone().add(offset))
-  })
+  // centroidFor(partitionId) — used when positioning shared nodes
+  function centroidFor(partitionId) {
+    if (partitionId === '__personal__') return personalCentroid
+    return agentCentroids[partitionId] ?? new THREE.Vector3(0, 0, 0)
+  }
 
-  // Build node index map (deterministic order: sorted by node ID)
+  // ── Assign 3D positions ───────────────────────────────────────────────────
+  // A node whose content string appears in more than one partition is "shared".
+  // Its position is the average of the contributing partition centroids, offset
+  // upward on Y so it visually floats between the subgraphs.
+  //
+  // Intra-partition nodes are scattered within a sphere of radius 20 around
+  // their partition centroid.
+
+  // Collect all node records tagged with their partition
+  const allNodes = [] // {node, partitionId, isShared}
+  for (const [partitionId, data] of partitions) {
+    for (const node of (data.nodes ?? [])) {
+      const contributingPartitions = contentMap.get(node.content) ?? new Set()
+      const isShared = contributingPartitions.size > 1
+      allNodes.push({ node, partitionId, isShared })
+    }
+  }
+
+  for (const { node, partitionId, isShared } of allNodes) {
+    if (isShared) {
+      const contributing = [...(contentMap.get(node.content) ?? new Set([partitionId]))]
+      const avg = new THREE.Vector3()
+      for (const pid of contributing) avg.add(centroidFor(pid))
+      avg.divideScalar(contributing.length)
+      avg.y += 12 // float above the XZ plane so shared nodes are visually distinct
+      nodePositions.set(node.id, avg)
+    } else {
+      nodePositions.set(node.id, centroidFor(partitionId).clone().add(randomOnSphere(20)))
+    }
+  }
+
+  // ── Build deterministic node index map ────────────────────────────────────
   const sortedNodeIds = [...nodePositions.keys()].sort()
-  sortedNodeIds.forEach((id, index) => {
-    nodeIndexMap.set(id, index)
-  })
+  sortedNodeIds.forEach((id, index) => nodeIndexMap.set(id, index))
 
-  // InstancedMesh for nodes
+  // ── InstancedMesh for all nodes ───────────────────────────────────────────
   const nodeGeo = new THREE.SphereGeometry(0.8, 10, 10)
-  const nodeMat = new THREE.MeshStandardMaterial()
-  instancedMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, nodes.length)
+  instancedMesh = new THREE.InstancedMesh(nodeGeo, new THREE.MeshStandardMaterial(), allNodes.length)
   instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
   instancedMesh.instanceColor = new THREE.InstancedBufferAttribute(
-    new Float32Array(nodes.length * 3), 3,
+    new Float32Array(allNodes.length * 3), 3,
   )
 
   const matrix = new THREE.Matrix4()
   const color = new THREE.Color()
 
-  nodes.forEach((node) => {
+  for (const { node, isShared } of allNodes) {
     const idx = nodeIndexMap.get(node.id)
-    if (idx === undefined) return
+    if (idx === undefined) continue
     const pos = nodePositions.get(node.id)
-    matrix.compose(pos, new THREE.Quaternion(), new THREE.Vector3(1, 1, 1))
+    const scale = isShared ? 1.75 : 1.0 // shared nodes are larger
+    nodeScaleMap.set(node.id, scale)
+    matrix.compose(pos, new THREE.Quaternion(), new THREE.Vector3(scale, scale, scale))
     instancedMesh.setMatrixAt(idx, matrix)
-    color.setHex(NODE_TYPE_COLORS[node.type] ?? NODE_TYPE_COLORS.memory)
+    if (isShared) {
+      color.set('#8b5cf6') // violet for shared nodes
+    } else {
+      color.setHex(NODE_TYPE_COLORS[node.type] ?? NODE_TYPE_COLORS.memory)
+    }
     instancedMesh.setColorAt(idx, color)
-  })
+  }
 
   instancedMesh.instanceMatrix.needsUpdate = true
   instancedMesh.instanceColor.needsUpdate = true
   scene.add(instancedMesh)
 
-  // LineSegments for edges
-  const positions = new Float32Array(edges.length * 6)
-  const colors = new Float32Array(edges.length * 6)
+  // ── Collect all edges ─────────────────────────────────────────────────────
+  // Two types:
+  //   intra-partition edges — from memory_edges within a partition (grey, weight-opacity)
+  //   cross-partition edges — from shared_memory_edges between agents (violet, weight-opacity)
 
-  edges.forEach((edge, k) => {
+  const intraEdges = [] // {id, source, target, weight}
+  for (const data of partitions.values()) {
+    for (const edge of (data.edges ?? [])) {
+      // Only include edges where both endpoints have positions
+      if (nodePositions.has(edge.source) && nodePositions.has(edge.target)) {
+        intraEdges.push(edge)
+      }
+    }
+  }
+
+  const crossEdges = sharedEdges.filter(
+    e => nodePositions.has(e.node_a_id) && nodePositions.has(e.node_b_id),
+  )
+
+  const totalEdges = intraEdges.length + crossEdges.length
+  if (totalEdges === 0) {
+    loading.value = false
+    animate()
+    fetchClusters()
+    fetchSnapshots()
+    fetchAlignment()
+    return
+  }
+
+  const edgePositions = new Float32Array(totalEdges * 6)
+  const edgeColors = new Float32Array(totalEdges * 6)
+
+  // Intra-partition edges: grey, opacity proportional to weight
+  intraEdges.forEach((edge, k) => {
     const fromPos = nodePositions.get(edge.source)
     const toPos = nodePositions.get(edge.target)
-    if (!fromPos || !toPos) return
-
     edgeIndexMap.set(edge.id, k)
+    edgePositions[k * 6 + 0] = fromPos.x; edgePositions[k * 6 + 1] = fromPos.y; edgePositions[k * 6 + 2] = fromPos.z
+    edgePositions[k * 6 + 3] = toPos.x;   edgePositions[k * 6 + 4] = toPos.y;   edgePositions[k * 6 + 5] = toPos.z
+    const g = edge.weight * 0.55
+    edgeColors[k * 6 + 0] = g; edgeColors[k * 6 + 1] = g; edgeColors[k * 6 + 2] = g
+    edgeColors[k * 6 + 3] = g; edgeColors[k * 6 + 4] = g; edgeColors[k * 6 + 5] = g
+  })
 
-    positions[k * 6 + 0] = fromPos.x
-    positions[k * 6 + 1] = fromPos.y
-    positions[k * 6 + 2] = fromPos.z
-    positions[k * 6 + 3] = toPos.x
-    positions[k * 6 + 4] = toPos.y
-    positions[k * 6 + 5] = toPos.z
-
-    const g = edge.weight * 0.6
-    colors[k * 6 + 0] = g; colors[k * 6 + 1] = g; colors[k * 6 + 2] = g
-    colors[k * 6 + 3] = g; colors[k * 6 + 4] = g; colors[k * 6 + 5] = g
+  // Cross-partition shared edges: violet, brighter with higher weight
+  // These are the connections "between files in different folders" — the signal
+  // that two agent subgraphs have converged on the same underlying memory.
+  const offset = intraEdges.length
+  crossEdges.forEach((edge, i) => {
+    const k = offset + i
+    const fromPos = nodePositions.get(edge.node_a_id)
+    const toPos = nodePositions.get(edge.node_b_id)
+    edgePositions[k * 6 + 0] = fromPos.x; edgePositions[k * 6 + 1] = fromPos.y; edgePositions[k * 6 + 2] = fromPos.z
+    edgePositions[k * 6 + 3] = toPos.x;   edgePositions[k * 6 + 4] = toPos.y;   edgePositions[k * 6 + 5] = toPos.z
+    // violet: R=0.545, G=0.361, B=0.965 scaled by weight
+    const v = 0.35 + edge.weight * 0.5
+    edgeColors[k * 6 + 0] = 0.545 * v; edgeColors[k * 6 + 1] = 0.361 * v; edgeColors[k * 6 + 2] = 0.965 * v
+    edgeColors[k * 6 + 3] = 0.545 * v; edgeColors[k * 6 + 4] = 0.361 * v; edgeColors[k * 6 + 5] = 0.965 * v
   })
 
   const lineGeo = new THREE.BufferGeometry()
-  lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  colorAttr = new THREE.BufferAttribute(colors, 3)
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3))
+  colorAttr = new THREE.BufferAttribute(edgeColors, 3)
   colorAttr.setUsage(THREE.DynamicDrawUsage)
   lineGeo.setAttribute('color', colorAttr)
 
@@ -477,7 +621,6 @@ async function buildScene() {
   loading.value = false
   animate()
 
-  // Fetch clusters and snapshots in parallel after scene is built
   fetchClusters()
   fetchSnapshots()
   fetchAlignment()
@@ -583,8 +726,6 @@ async function runSimTick() {
 function flashActiveNodes(activeIds) {
   if (!instancedMesh) return
   const matrix = new THREE.Matrix4()
-  const scaleUp = new THREE.Vector3(1.6, 1.6, 1.6)
-  const scaleNormal = new THREE.Vector3(1, 1, 1)
 
   for (const nodeId of activeIds) {
     const idx = nodeIndexMap.get(nodeId)
@@ -592,6 +733,8 @@ function flashActiveNodes(activeIds) {
     instancedMesh.getMatrixAt(idx, matrix)
     const pos = new THREE.Vector3()
     pos.setFromMatrixPosition(matrix)
+    const baseScale = nodeScaleMap.get(nodeId) ?? 1
+    const scaleUp = new THREE.Vector3(baseScale * 1.6, baseScale * 1.6, baseScale * 1.6)
     matrix.compose(pos, new THREE.Quaternion(), scaleUp)
     instancedMesh.setMatrixAt(idx, matrix)
   }
@@ -606,6 +749,8 @@ function flashActiveNodes(activeIds) {
       instancedMesh.getMatrixAt(idx, matrix)
       const pos = new THREE.Vector3()
       pos.setFromMatrixPosition(matrix)
+      const baseScale = nodeScaleMap.get(nodeId) ?? 1
+      const scaleNormal = new THREE.Vector3(baseScale, baseScale, baseScale)
       matrix.compose(pos, new THREE.Quaternion(), scaleNormal)
       instancedMesh.setMatrixAt(idx, matrix)
     }
@@ -630,11 +775,22 @@ function updateEdgeColors(updatedEdges) {
 
 // ── Simulate all agents ───────────────────────────────────────────────────────
 async function runSimulateAll() {
-  await fetch('/api/agents/simulate-all', {
+  const wasRunning = simRunning.value
+  stopSimulation()
+
+  const res = await fetch('/api/agents/simulate-all', {
     method: 'POST',
     headers: csrfHeaders(),
   })
-  fetchAlignment()
+
+  if (!res.ok) {
+    if (wasRunning) startSimulation()
+    return
+  }
+
+  await rebuildScene()
+
+  if (wasRunning) startSimulation()
 }
 
 // ── Simulation controls ───────────────────────────────────────────────────────
@@ -678,7 +834,7 @@ function onScrub(value) {
 
 // ── Render loop ───────────────────────────────────────────────────────────────
 function animate() {
-  requestAnimationFrame(animate)
+  animationFrameId = requestAnimationFrame(animate)
   controls.update()
   renderer.render(scene, camera)
 }
@@ -706,9 +862,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopSimulation()
   window.removeEventListener('resize', onResize)
-  if (renderer) {
-    renderer.dispose()
-  }
+  disposeScene()
 })
 </script>
 
