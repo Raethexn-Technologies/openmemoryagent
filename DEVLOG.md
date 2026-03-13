@@ -16,7 +16,60 @@ The log is append-only. Entries are not edited after the fact.
 
 ---
 
-## Entry 012 - 2026-03-12
+## Entry 013 - 2026-03-13
+### The society question: does collective Physarum produce emergent group cognition?
+
+#### What prompted this
+
+A research direction question: if multiple agents share Physarum edge weights over time, does the result look like a society? The answer is yes, but not by analogy. The architecture already implements the mechanisms that define societies in complexity science, without those mechanisms having been designed for that purpose.
+
+#### Why this is a society and not just a multi-agent system
+
+The distinction is not scale; it is the mechanism of coordination. A typical multi-agent system coordinates agents explicitly through message passing, shared state, or orchestrated calls. A society does not coordinate. It produces emergent structure through individual behaviors accumulating into shared artifacts that then shape future individual behavior. The Physarum model does exactly this.
+
+No agent in this system communicates with another agent. Shared edges form because two agents independently traversed the same memory content, not because they exchanged signals. The collective graph topology is therefore a social artifact: a structure that belongs to no individual, that no individual designed, but that reflects what the group collectively found important, weighted by trust.
+
+This is stigmergy, the mechanism ant colonies use to build trail networks. Individual ants do not negotiate routes. They deposit and follow pheromone gradients. The efficient path emerges from independent agents responding to a shared medium. Physarum weights are the pheromone gradient. The collective graph is the trail network.
+
+#### Specialization emerges without assignment
+
+If agent A's conversation history is heavy on technical topics and agent B's is heavy on creative work, their individual Physarum weights diverge after enough turns. Agent A develops high-weight paths through technical memory clusters and near-floor weights on creative ones. Agent B is the inverse. Neither was assigned a role. Both grew into their specialization through differential reinforcement on genuinely different access histories.
+
+This is measurable from data already collected. The cluster alignment panel shows pairwise Jaccard similarity of active content sets. Agents whose alignment score has been falling over time are specializing. Agents whose alignment score is high and stable are working on the same knowledge domain. The specialization signal is latent in the existing data; it only requires a trend view over the snapshot history to surface it.
+
+#### The cortex framing, stated precisely
+
+The neocortex is not where any individual thought lives. It is the substrate on which thinking happens: a structure of connection strengths across regions that reflects accumulated experience, shaped by what has been used together frequently and what has not. No single neuron holds a memory. The memory is the pattern of weights across many connections.
+
+The collective Physarum graph is the same structure at the agent-society level. No single agent holds the group memory. The group memory is the pattern of shared edge weights across all agent partitions: which content the group has found important together, how strongly, and weighted by how much each contributing agent has earned trust. An individual agent's personal graph is analogous to a cortical column. The shared edge layer is analogous to the long-range connections between cortical regions. The cluster structure is analogous to functional areas.
+
+The cortex framing sets the right expectation for what the Three.js surface should show. It is not a visualization of individual agents doing things. It is a visualization of a cognitive substrate evolving in real time.
+
+#### Where the analogy breaks and becomes its own thing
+
+A biological cortex has no provenance record. You cannot ask which neurons contributed which weights to which circuit, or when, or with what reliability history.
+
+This implementation stores exactly that. Every shared edge weight increment carries the ICP principal of the contributing agent, the trust score applied at the time of increment, and the timestamp. The collective cognitive structure is fully auditable: not just what the group knows, but who taught it, with what established reputation, and when. A society of agents on this substrate is the first society whose cognitive history is verifiable at the edge level.
+
+This is not a minor enhancement of the cortex analogy. It changes the research question from "what did the group learn?" to "who shaped what the group learned, and can you trust them?" The MemoryGraft resistance mechanism answers the second question cryptographically.
+
+#### The research question this opens
+
+Does the collective Physarum topology diverge meaningfully from what you would predict by summing individual topologies weighted by trust? Concretely: after agents with genuinely different access histories run for long enough, are there high-weight paths in the collective graph that no single agent accessed frequently but that emerge from the aggregate of many agents accessing occasionally?
+
+If yes, the collective graph encodes knowledge that exists only at the group level. This is emergent collective memory in the strict sense: information that no individual holds but that the group has collectively established as important. If no, collective Physarum is individual Physarum with shared bookkeeping, which is still useful for alignment monitoring but makes a weaker claim about group cognition.
+
+#### The experiment design
+
+The architecture to test this already exists. The experiment requires three components: a controlled knowledge domain with knowable structure, agents seeded with genuinely different subsets of that domain's memory content, and a sufficiently long run of simulation ticks to allow Physarum weights to develop.
+
+After the run, compare the collective cluster topology against the union of individual cluster topologies weighted by each agent's trust score. If clusters exist in the collective graph that are absent from any individual graph, emergent collective memory has been demonstrated. The temporal axis scrubber provides the time dimension: the emergence of those clusters should be traceable to a specific point in the simulation history where cross-agent reinforcement first created paths that no individual had established.
+
+The Three.js surface already renders the collective topology. The snapshot history already stores the time series. What the experiment adds is a controlled starting condition and a quantitative comparison metric. The infrastructure is not a bottleneck.
+
+---
+
+
 ### The black box problem: five layers of invisible AI behavior and what this surface makes visible
 
 #### What prompted this
