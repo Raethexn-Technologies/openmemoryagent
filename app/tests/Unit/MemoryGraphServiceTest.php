@@ -242,4 +242,214 @@ class MemoryGraphServiceTest extends TestCase
         $this->expectException(ModelNotFoundException::class);
         $service->getNeighborhood('user-2', $root->id, 1);
     }
+
+    public function test_reinforce_updates_access_tracking_and_edge_weights_for_loaded_nodes(): void
+    {
+        $first = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'First',
+            'content' => 'First',
+            'tags' => ['alpha'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $second = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'Second',
+            'content' => 'Second',
+            'tags' => ['beta'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $third = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'Third',
+            'content' => 'Third',
+            'tags' => ['gamma'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+
+        $reinforcedEdge = MemoryEdge::create([
+            'user_id' => 'user-1',
+            'from_node_id' => $first->id,
+            'to_node_id' => $second->id,
+            'relationship' => 'same_topic_as',
+            'weight' => 0.5,
+        ]);
+        $untouchedEdge = MemoryEdge::create([
+            'user_id' => 'user-1',
+            'from_node_id' => $second->id,
+            'to_node_id' => $third->id,
+            'relationship' => 'same_topic_as',
+            'weight' => 0.5,
+        ]);
+
+        $service = app(MemoryGraphService::class);
+
+        $service->reinforce([$first->id, $second->id], 'user-1');
+
+        $reinforcedEdge->refresh();
+        $untouchedEdge->refresh();
+        $first->refresh();
+        $second->refresh();
+        $third->refresh();
+
+        $this->assertEqualsWithDelta(0.6, $reinforcedEdge->weight, 0.0001);
+        $this->assertSame(1, $reinforcedEdge->access_count);
+        $this->assertNotNull($reinforcedEdge->last_accessed_at);
+        $this->assertEqualsWithDelta(0.5, $untouchedEdge->weight, 0.0001);
+        $this->assertSame(0, $untouchedEdge->access_count);
+        $this->assertSame(1, $first->access_count);
+        $this->assertSame(1, $second->access_count);
+        $this->assertSame(0, $third->access_count);
+    }
+
+    public function test_reinforce_tracks_single_node_access_without_touching_edges(): void
+    {
+        $node = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'Solo',
+            'content' => 'Solo',
+            'tags' => ['solo'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $other = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'Other',
+            'content' => 'Other',
+            'tags' => ['other'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $edge = MemoryEdge::create([
+            'user_id' => 'user-1',
+            'from_node_id' => $node->id,
+            'to_node_id' => $other->id,
+            'relationship' => 'same_topic_as',
+            'weight' => 0.5,
+        ]);
+
+        $service = app(MemoryGraphService::class);
+
+        $service->reinforce([$node->id], 'user-1');
+
+        $node->refresh();
+        $other->refresh();
+        $edge->refresh();
+
+        $this->assertSame(1, $node->access_count);
+        $this->assertSame(0, $other->access_count);
+        $this->assertSame(0, $edge->access_count);
+        $this->assertNull($edge->last_accessed_at);
+        $this->assertEqualsWithDelta(0.5, $edge->weight, 0.0001);
+    }
+
+    public function test_reinforce_from_memories_returns_matching_ids_and_ignores_unmatched_records(): void
+    {
+        $first = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'First',
+            'content' => 'Remember alpha',
+            'tags' => ['alpha'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $second = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'Second',
+            'content' => 'Remember beta',
+            'tags' => ['beta'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+
+        $edge = MemoryEdge::create([
+            'user_id' => 'user-1',
+            'from_node_id' => $first->id,
+            'to_node_id' => $second->id,
+            'relationship' => 'same_topic_as',
+            'weight' => 0.5,
+        ]);
+
+        $service = app(MemoryGraphService::class);
+
+        $nodeIds = $service->reinforceFromMemories([
+            ['content' => 'Remember alpha'],
+            ['content' => 'Remember beta'],
+            ['content' => 'No matching graph node'],
+        ], 'user-1');
+
+        sort($nodeIds);
+        $expectedIds = [$first->id, $second->id];
+        sort($expectedIds);
+
+        $edge->refresh();
+        $this->assertSame($expectedIds, $nodeIds);
+        $this->assertSame(1, $edge->access_count);
+    }
+
+    public function test_decay_reduces_weights_without_crossing_the_floor(): void
+    {
+        $first = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'First',
+            'content' => 'First',
+            'tags' => ['alpha'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $second = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'Second',
+            'content' => 'Second',
+            'tags' => ['beta'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+
+        $decaying = MemoryEdge::create([
+            'user_id' => 'user-1',
+            'from_node_id' => $first->id,
+            'to_node_id' => $second->id,
+            'relationship' => 'same_topic_as',
+            'weight' => 0.5,
+        ]);
+        $floor = MemoryEdge::create([
+            'user_id' => 'user-1',
+            'from_node_id' => $second->id,
+            'to_node_id' => $first->id,
+            'relationship' => 'related_to',
+            'weight' => 0.05,
+        ]);
+
+        $service = app(MemoryGraphService::class);
+
+        $service->decay();
+
+        $decaying->refresh();
+        $floor->refresh();
+
+        $this->assertEqualsWithDelta(0.485, $decaying->weight, 0.0001);
+        $this->assertEqualsWithDelta(0.05, $floor->weight, 0.0001);
+    }
 }

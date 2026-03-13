@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\MemoryEdge;
+use App\Models\MemoryNode;
 use App\Services\GraphExtractionService;
 use App\Services\IcpMemoryService;
 use App\Services\LLM\LlmService;
@@ -56,6 +58,7 @@ class ChatMemoryGraphTest extends TestCase
         $response->assertOk();
         $response->assertJsonPath('memory_id', 'mem-1');
         $response->assertJsonPath('memory_type', 'public');
+        $response->assertJsonPath('active_node_ids', []);
         $this->assertDatabaseCount('memory_nodes', 1);
         $this->assertDatabaseHas('memory_nodes', [
             'user_id' => 'user-1',
@@ -153,6 +156,71 @@ class ChatMemoryGraphTest extends TestCase
             'label' => 'Browser memory',
             'sensitivity' => 'public',
         ]);
+    }
+
+    public function test_send_returns_active_node_ids_for_reinforced_memories(): void
+    {
+        $first = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'First',
+            'content' => 'Remember alpha',
+            'tags' => ['alpha'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $second = MemoryNode::create([
+            'user_id' => 'user-1',
+            'type' => 'memory',
+            'sensitivity' => 'public',
+            'label' => 'Second',
+            'content' => 'Remember beta',
+            'tags' => ['beta'],
+            'confidence' => 1.0,
+            'source' => 'chat',
+        ]);
+        $edge = MemoryEdge::create([
+            'user_id' => 'user-1',
+            'from_node_id' => $first->id,
+            'to_node_id' => $second->id,
+            'relationship' => 'same_topic_as',
+            'weight' => 0.5,
+        ]);
+
+        $this->bindLlmForSend();
+
+        $icp = Mockery::mock(IcpMemoryService::class);
+        $icp->shouldIgnoreMissing();
+        $icp->shouldReceive('getPublicMemories')->once()->with('user-1')->andReturn([
+            ['content' => 'Remember alpha', 'memory_type' => 'public'],
+            ['content' => 'Remember beta', 'memory_type' => 'public'],
+            ['content' => 'No graph node', 'memory_type' => 'public'],
+        ]);
+        $icp->shouldReceive('mode')->andReturn('mock');
+        $this->app->instance(IcpMemoryService::class, $icp);
+
+        $summarizer = Mockery::mock(MemorySummarizationService::class);
+        $summarizer->shouldReceive('extract')->once()->andReturn(null);
+        $this->app->instance(MemorySummarizationService::class, $summarizer);
+
+        $response = $this->withSession([
+            'chat_session_id' => 'session-1',
+            'chat_user_id' => 'user-1',
+        ])->postJson('/chat/send', [
+            'message' => 'What do you remember about me?',
+        ]);
+
+        $response->assertOk();
+        $activeNodeIds = $response->json('active_node_ids');
+        sort($activeNodeIds);
+        $expectedIds = [$first->id, $second->id];
+        sort($expectedIds);
+
+        $edge->refresh();
+
+        $this->assertSame($expectedIds, $activeNodeIds);
+        $this->assertEqualsWithDelta(0.6, $edge->weight, 0.0001);
     }
 
     private function bindLlmForSend(): void
