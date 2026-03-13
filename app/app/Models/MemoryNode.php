@@ -12,13 +12,15 @@ class MemoryNode extends Model
 
     protected $fillable = [
         'user_id', 'session_id', 'type', 'sensitivity', 'label',
-        'content', 'tags', 'confidence', 'source', 'metadata',
+        'content', 'tags', 'confidence', 'access_count', 'last_accessed_at', 'source', 'metadata',
     ];
 
     protected $casts = [
         'tags' => 'array',
         'metadata' => 'array',
         'confidence' => 'float',
+        'access_count' => 'integer',
+        'last_accessed_at' => 'datetime',
     ];
 
     public function outgoingEdges(): HasMany

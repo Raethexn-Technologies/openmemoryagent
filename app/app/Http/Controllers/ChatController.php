@@ -114,6 +114,12 @@ class ChatController extends Controller
         // Private and Sensitive records are never fed to the LLM — see IcpMemoryService::getPublicMemories().
         $memories = $this->icp->getPublicMemories($userId);
 
+        // Identify which graph nodes correspond to the memories loaded into context,
+        // then reinforce the edges between them (Physarum/Hebbian update).
+        // The returned node IDs are also sent to the browser so the Three.js
+        // visualization can animate the nodes that were active this turn.
+        $loadedNodeIds = $this->graphService->reinforceFromMemories($memories, $userId);
+
         // Build prompt with memory context
         $systemPrompt = $this->llm->buildSystemPrompt($memories);
 
@@ -167,6 +173,10 @@ class ChatController extends Controller
             'user_id' => $userId,
             'provider' => $this->llm->provider(),
             'icp_mode' => $this->icp->mode(),
+            // IDs of graph nodes loaded into the LLM context this turn.
+            // The Three.js visualization uses these to highlight active nodes
+            // and the graph API uses them to show which memories were retrieved.
+            'active_node_ids' => $loadedNodeIds,
         ]);
     }
 

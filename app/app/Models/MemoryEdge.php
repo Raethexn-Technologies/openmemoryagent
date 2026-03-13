@@ -13,13 +13,15 @@ class MemoryEdge extends Model
     public $timestamps = false;
 
     protected $fillable = [
-        'user_id', 'from_node_id', 'to_node_id', 'relationship', 'weight', 'metadata',
+        'user_id', 'from_node_id', 'to_node_id', 'relationship', 'weight', 'access_count', 'last_accessed_at', 'metadata',
     ];
 
     protected $casts = [
         'metadata' => 'array',
         'weight' => 'float',
+        'access_count' => 'integer',
         'created_at' => 'datetime',
+        'last_accessed_at' => 'datetime',
     ];
 
     public function fromNode(): BelongsTo

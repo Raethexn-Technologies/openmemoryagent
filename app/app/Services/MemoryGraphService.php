@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Models\MemoryEdge;
 use App\Models\MemoryNode;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Manages the brain-like memory graph: nodes, edges, and neighborhood traversal.
@@ -132,6 +134,128 @@ class MemoryGraphService
             'edges' => $allEdges->map(fn ($e) => $this->edgeToArray($e))->values(),
         ];
     }
+
+    // ── Physarum / Hebbian weight dynamics ───────────────────────────────────
+
+    /**
+     * Reinforce the nodes and edges that were loaded into the LLM context window.
+     *
+     * Implements the discrete form of the Tero et al. (2010) conductance update:
+     *   w(t+1) = min(1.0,  w(t) + ALPHA)
+     *
+     * Called immediately after getPublicMemories() returns a set of node IDs,
+     * so the edges between co-accessed nodes accumulate weight proportional to
+     * how often the LLM finds them relevant together (Hebbian co-activation).
+     *
+     * Node access counts are incremented separately to support ACT-R-style
+     * base-level activation retrieval ordering in future iterations.
+     *
+     * @param  string[]  $nodeIds  IDs of nodes loaded into the LLM context this turn.
+     */
+    public function reinforce(array $nodeIds, string $userId): void
+    {
+        if (count($nodeIds) < 2) {
+            // A single node has no edges to reinforce between co-accessed peers.
+            if (count($nodeIds) === 1) {
+                MemoryNode::where('user_id', $userId)
+                    ->whereIn('id', $nodeIds)
+                    ->increment('access_count', 1, ['last_accessed_at' => Carbon::now()]);
+            }
+
+            return;
+        }
+
+        $now = Carbon::now();
+
+        // Record node-level access for ACT-R activation tracking.
+        MemoryNode::where('user_id', $userId)
+            ->whereIn('id', $nodeIds)
+            ->increment('access_count', 1, ['last_accessed_at' => $now]);
+
+        // Find all edges that connect any two nodes in the co-accessed set.
+        $edges = MemoryEdge::where('user_id', $userId)
+            ->where(function ($q) use ($nodeIds) {
+                $q->whereIn('from_node_id', $nodeIds)
+                    ->whereIn('to_node_id', $nodeIds);
+            })
+            ->get();
+
+        foreach ($edges as $edge) {
+            $edge->weight = min(1.0, $edge->weight + self::ALPHA);
+            $edge->access_count = $edge->access_count + 1;
+            $edge->last_accessed_at = $now;
+            $edge->save();
+        }
+    }
+
+    /**
+     * Apply time-based weight decay to all edges in the graph.
+     *
+     * Implements the Physarum decay term (Tero et al. 2010):
+     *   w(t+1) = max(FLOOR,  w(t) * RHO)
+     *
+     * RHO = 0.97 means edges lose 3 % of their weight per day when not traversed.
+     * An edge with initial weight 0.5 that is never accessed reaches the floor
+     * after approximately 100 days. Edges that are regularly reinforced plateau
+     * near 1.0 and decay back slowly during idle periods.
+     *
+     * This method is called by the DecayMemoryEdges artisan command, which should
+     * be scheduled to run once per day via the Laravel scheduler.
+     */
+    public function decay(): void
+    {
+        // Bulk update keeps decay efficient while staying portable across SQLite and Postgres.
+        DB::table('memory_edges')
+            ->where('weight', '>', self::WEIGHT_FLOOR)
+            ->update([
+                'weight' => DB::raw(sprintf(
+                    'CASE WHEN weight * %.2F < %.2F THEN %.2F ELSE weight * %.2F END',
+                    self::RHO,
+                    self::WEIGHT_FLOOR,
+                    self::WEIGHT_FLOOR,
+                    self::RHO,
+                )),
+            ]);
+    }
+
+    /**
+     * Look up the graph nodes that correspond to a set of ICP memory records,
+     * call reinforce() on their IDs, and return those IDs for the API response.
+     *
+     * ICP memory records and graph nodes are linked by content string equality.
+     * This is the correct join point because the graph node is created from the
+     * same content string that ICP stores, so matching on content is exact.
+     *
+     * @param  array<int, array{content: string, ...}>  $memories  Records from IcpMemoryService::getPublicMemories()
+     * @return string[] Graph node IDs that were reinforced, for the active_node_ids response field.
+     */
+    public function reinforceFromMemories(array $memories, string $userId): array
+    {
+        if (empty($memories)) {
+            return [];
+        }
+
+        $contents = array_column($memories, 'content');
+
+        $nodeIds = MemoryNode::where('user_id', $userId)
+            ->whereIn('content', $contents)
+            ->pluck('id')
+            ->all();
+
+        $this->reinforce($nodeIds, $userId);
+
+        return $nodeIds;
+    }
+
+    // Physarum model constants (Tero et al. 2010, discrete form).
+    // ALPHA: conductance increment per co-access event.
+    // RHO:   daily retention factor (1 - decay_rate); 0.97 yields ~3 % daily decay.
+    // WEIGHT_FLOOR: minimum weight; edges never fully disappear from the graph.
+    private const ALPHA = 0.10;
+
+    private const RHO = 0.97;
+
+    private const WEIGHT_FLOOR = 0.05;
 
     // ── Edge auto-wiring ──────────────────────────────────────────────────────
 
