@@ -1,6 +1,6 @@
 # OpenMemoryAgent
 
-An experimental chat application exploring what AI memory looks like when the storage layer enforces its own access control instead of delegating that to the host application. The user's browser holds an Ed25519 signing key; writes to the ICP canister are authenticated with that key so the server cannot write memory records under a user's identity. A brain-like memory graph sits in PostgreSQL alongside the canister records, tracking relationships between memories and applying Physarum-inspired conductance dynamics that shift edge weights based on how the agent actually uses each connection over time.
+An experimental chat application exploring what AI memory looks like when the storage layer enforces its own access control instead of delegating that to the host application. The user's browser holds an Ed25519 signing key; writes to the ICP canister are authenticated with that key so the server cannot write memory records under a user's identity. A typed memory graph sits in PostgreSQL alongside the canister records, tracking relationships between memories and applying Physarum conductance dynamics that shift edge weights based on how the agent actually uses each connection over time.
 
 [VISION.md](./VISION.md) covers the design decisions and research questions in depth. [DEVLOG.md](./DEVLOG.md) is the running record of what was discovered building it: implementation findings, security fixes, architectural tensions, and what remains unresolved.
 
@@ -18,9 +18,12 @@ The application is a standard Laravel and Vue web app. The interesting parts are
 
 **LLM recall.** Only public memories are loaded into the LLM context. Private and sensitive records are gated by `msg.caller` on the canister: anonymous callers (the server adapter, the MCP server, and external HTTP clients) receive only public records.
 
-**Active node IDs.** The `/chat/send` response includes an `active_node_ids` field listing the graph nodes loaded into context that turn. The Three.js brain visualization (not yet built, described in DEVLOG Entry 002) will use this field to animate the nodes that were active in real time.
+**Active node IDs.** The `/chat/send` response includes an `active_node_ids` field listing the graph nodes loaded into context that turn. The Three.js mission control surface at `/3d` reads this field to highlight which nodes were active on the most recent turn.
 
-In mock mode, which is the default for local development, memories are stored in Laravel's file cache rather than in a canister. The consent flow runs identically in both modes.
+**Multi-agent simulation.** Multiple agents can be created under the same owner at `/agents`. Each agent holds its own graph partition. When two agents both access nodes derived from the same memory content, a shared edge accumulates weight at `SHARED_ALPHA * trust_score`. The trust score is adjustable per agent, making each agent's contribution to the collective graph proportional to its established reputation.
+
+**Cluster detection.** Weighted label propagation (Raghavan et al. 2007) partitions the personal or collective graph into communities on demand. Cluster membership and mean internal weight are written to `graph_snapshots` every 15 minutes and feed the temporal axis scrubber in the Three.js surface.
+
 
 ---
 
@@ -47,7 +50,8 @@ Public memories are the only records the LLM can recall. Private and sensitive r
 | Database | PostgreSQL (Docker) or SQLite (local development) |
 | LLM | OpenRouter, model configurable via `OPENROUTER_MODEL` |
 | Memory records | ICP canister (Motoko), browser-signed writes, Node.js adapter for server reads |
-| Memory graph | PostgreSQL tables (`memory_nodes`, `memory_edges`), Physarum dynamics, D3 force-directed visualization |
+| Memory graph | PostgreSQL tables (`memory_nodes`, `memory_edges`), Physarum dynamics, D3 force-directed explorer at `/graph` |
+| Multi-agent graph | PostgreSQL tables (`agents`, `shared_memory_edges`, `graph_snapshots`), collective Physarum dynamics, Three.js mission control surface at `/3d` |
 
 ---
 
@@ -56,7 +60,7 @@ Public memories are the only records the LLM can recall. Private and sensitive r
 ```bash
 cd app
 cp .env.example .env
-# Set OPENROUTER_API_KEY in .env — get a key at https://openrouter.ai/keys
+# Set OPENROUTER_API_KEY in .env (get a key at https://openrouter.ai/keys)
 php artisan key:generate
 composer install
 npm install
@@ -111,9 +115,13 @@ The memory layer and graph layer store identical records regardless of which mod
 
 The graph explorer is available at `/graph`. It shows the full memory graph for the current user as a D3 force-directed visualization. Three views are available: the graph (nodes and edges in 2D space), a timeline (nodes in chronological order), and a list (filterable grid).
 
-Left panel controls: filter by node type, filter by sensitivity, search across labels and content, and live counts of nodes, edges, and clusters. Right panel shows node details on click: type, sensitivity, label, content, tags, and connected nodes with their relationship labels. Clicking "Expand neighborhood" fetches the node's two-hop neighborhood from the server and merges it into the current view.
+The left panel provides controls for filtering by node type, filtering by sensitivity, and searching across labels and content, with live counts of nodes, edges, and clusters. Right panel shows node details on click: type, sensitivity, label, content, tags, and connected nodes with their relationship labels. Clicking "Expand neighborhood" fetches the node's two-hop neighborhood from the server and merges it into the current view.
 
-Node radius scales with degree count. Edge width reflects the current Physarum weight: thick edges are Hebbian paths that the agent has traversed frequently; thin edges are dormant connections that have decayed toward the floor.
+Node radius scales with degree count. Edge width reflects the current Physarum weight: thick edges are Hebbian paths the agent has traversed frequently; thin edges are dormant connections that have decayed toward the floor.
+
+The Three.js mission control surface is available at `/3d`. It renders the multi-agent graph at the cluster level. Agent partitions occupy distinct spatial regions. Shared nodes, those whose content appears in more than one agent's partition, float at partition boundaries colored violet. A temporal axis scrubber loads cluster snapshots from the past 24 hours. An intent alignment panel shows pairwise Jaccard similarity of agent active content sets.
+
+The multi-agent simulation is available at `/agents`. Create agents, adjust trust scores, seed each agent's partition from the owner's public nodes, and run per-agent or collective simulation ticks to observe how shared edge weights evolve.
 
 ---
 
@@ -162,7 +170,7 @@ cd app
 php artisan test
 ```
 
-The test suite runs against SQLite in-memory and mock mode throughout. No API key or canister is required. The suite currently covers graph reinforcement, edge decay, neighborhood traversal, the memory approval flow, and the `active_node_ids` response field.
+The test suite runs against SQLite in-memory and mock mode throughout. No API key or canister is required. Coverage includes graph reinforcement, edge decay, neighborhood traversal, cluster detection determinism, graph snapshot storage and pruning, agent alignment Jaccard calculation, the memory approval flow, the `active_node_ids` response field, and the ThreeD page load with agent scoping.
 
 ---
 
@@ -173,16 +181,20 @@ OpenMemoryAgent/
 ├── app/                          # Laravel application
 │   ├── app/
 │   │   ├── Console/Commands/
-│   │   │   └── DecayMemoryEdges.php         # php artisan memory:decay
+│   │   │   ├── DecayMemoryEdges.php         # php artisan memory:decay
+│   │   │   └── TakeGraphSnapshot.php        # php artisan graph:snapshot (runs every 15 min)
 │   │   ├── Http/Controllers/
 │   │   │   ├── ChatController.php           # chat, memory store, graph sync endpoints
-│   │   │   ├── GraphController.php          # graph data and neighborhood API
+│   │   │   ├── GraphController.php          # graph data, neighborhood, clusters, snapshots, /3d
+│   │   │   ├── AgentController.php          # agent CRUD, seed, simulate, alignment, shared edges
 │   │   │   └── MemoryController.php
 │   │   ├── Services/
 │   │   │   ├── IcpMemoryService.php         # fetches public records for LLM context
 │   │   │   ├── MemorySummarizationService.php
 │   │   │   ├── GraphExtractionService.php   # LLM extracts node type, label, tags per memory
 │   │   │   ├── MemoryGraphService.php       # stores nodes, wires edges, Physarum dynamics
+│   │   │   ├── ClusterDetectionService.php  # weighted label propagation community detection
+│   │   │   ├── MultiAgentGraphService.php   # collective Physarum, shared edges, agent seeding
 │   │   │   └── LLM/
 │   │   │       ├── LlmProviderInterface.php
 │   │   │       ├── LlmService.php
@@ -190,16 +202,24 @@ OpenMemoryAgent/
 │   │   └── Models/
 │   │       ├── Message.php
 │   │       ├── MemoryNode.php               # typed graph node with access tracking
-│   │       └── MemoryEdge.php               # directed edge with Physarum weight
+│   │       ├── MemoryEdge.php               # directed edge with Physarum weight
+│   │       ├── Agent.php                    # agent record with trust_score and graph_user_id
+│   │       ├── SharedMemoryEdge.php         # cross-agent edge keyed by content hash
+│   │       └── GraphSnapshot.php            # cluster payload for one 15-minute interval
 │   ├── database/migrations/
 │   │   ├── ..._create_memory_nodes_table.php
 │   │   ├── ..._create_memory_edges_table.php
-│   │   └── ..._add_access_tracking_to_memory_graph.php
+│   │   ├── ..._add_access_tracking_to_memory_graph.php
+│   │   ├── ..._create_agents_table.php
+│   │   ├── ..._create_shared_memory_edges_table.php
+│   │   └── ..._create_graph_snapshots_table.php
 │   ├── resources/js/
 │   │   ├── Pages/
 │   │   │   ├── Chat/Index.vue               # chat interface and My Memories panel
 │   │   │   ├── Memory/Index.vue             # flat memory inspector
-│   │   │   └── Memory/Graph.vue             # D3 force-directed graph explorer
+│   │   │   ├── Memory/Graph.vue             # D3 force-directed graph explorer
+│   │   │   ├── Memory/ThreeD.vue            # Three.js mission control surface
+│   │   │   └── Agents/Index.vue             # multi-agent simulation panel
 │   │   └── composables/
 │   │       ├── useIcpIdentity.js            # Ed25519 key generation and localStorage persistence
 │   │       └── useIcpMemory.js              # browser-signed writes and owner-authenticated reads
@@ -234,6 +254,8 @@ OpenMemoryAgent/
 | PostgreSQL | Chat transcript, session data, memory graph (nodes, edges, Physarum weights) |
 | GraphExtractionService | Second LLM pass after each confirmed memory write; extracts node type, label, tags, people, projects |
 | MemoryGraphService | Creates nodes, auto-wires edges, applies Hebbian reinforcement, runs Physarum decay |
+| ClusterDetectionService | Weighted label propagation producing community membership and mean weight per cluster |
+| MultiAgentGraphService | Creates and seeds agent partitions, updates shared edges with trust-weighted ALPHA, retrieves collective context |
 | IcpMemoryService | Fetches public memories from the adapter for injection into the LLM system prompt |
 | ICP adapter | Translates HTTP JSON from Laravel into Candid query calls; read-only in live mode |
 | ICP canister | Enforces msg.caller as record owner and serves JSON records over the HTTP gateway |
