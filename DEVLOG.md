@@ -573,6 +573,42 @@ The Three.js brain globe renders the system's cognitive history. Thick edges are
 
 ---
 
+## Entry 005 — 2026-03-12
+### Code review findings: decay portability, Hebbian signal quality, and the retrieval gap
+
+#### What was fixed
+
+**Decay SQL portability.** The original `decay()` method used `GREATEST()`, which PostgreSQL supports but SQLite does not. Because the test suite runs against SQLite in-memory, any test touching the decay path would have failed silently or thrown an exception. The fix rewrites the update as a portable `CASE WHEN weight * RHO < FLOOR THEN FLOOR ELSE weight * RHO END` expression that executes correctly on both engines. This matters because the portability gap means local test results would not have reflected production behaviour on PostgreSQL.
+
+**Model fillable and cast alignment.** The `access_count` and `last_accessed_at` columns added by the migration were not listed in `$fillable` or `$casts` on `MemoryNode` and `MemoryEdge`. Without them, mass assignment via `increment()` would silently drop the new columns in some Eloquent paths, and the datetime cast would not apply to `last_accessed_at` when reading records. Both models are now corrected.
+
+**Test coverage added.** Four test files cover the new behaviour: reinforcement and single-node access tracking in `MemoryGraphServiceTest`, content-to-node matching in the same file, active_node_ids presence in the `/chat/send` response in `ChatMemoryGraphTest`, and the scheduled decay command path in `DecayMemoryEdgesCommandTest`. The suite passes at 32 tests, 125 assertions.
+
+#### The architectural gap that remains
+
+The review correctly identified that the Hebbian reinforcement signal is currently weak. The problem is that `getPublicMemories()` returns the entire public memory set regardless of what the user actually asked, and `reinforce()` is called on that full set. If a user has 30 stored public memories, every one of those 30 nodes is marked as co-accessed on every single turn, and every edge between them is incremented by ALPHA. Over time the graph weights converge toward a uniform high value that reflects "this user has public memories" rather than "these specific memories were relevant to this specific query."
+
+The Physarum analogy breaks down here. In the actual organism, flux through a tube increases only when food is found at that tube's terminal. If flux is artificially injected into every tube simultaneously, all conductances converge to the same high value and the organism loses its ability to find shorter paths. That is what the current flat retrieval does to the Hebbian weights.
+
+This is not a bug in the reinforcement implementation. The implementation is correct given what it receives. The fix is upstream: narrow what gets retrieved before reinforcement runs, so that only genuinely relevant memories enter the co-activation set.
+
+#### What fixes the signal quality: graph-guided retrieval
+
+The solution is Principle 2 from Entry 003. Instead of retrieving the full public set, retrieve the Hebbian neighbourhood of the most recently activated nodes. The steps are:
+
+1. Before building the system prompt, identify the highest-weight nodes in the graph for this user. These are the nodes with the strongest accumulated signal, which approximates the ACT-R base-level activation of recently and frequently accessed memories.
+2. Traverse their outgoing edges in weight-descending order, collecting the N-hop neighbourhood up to a token budget.
+3. Inject only that neighbourhood into the LLM context window, not the full flat set.
+4. Run reinforcement on only the retrieved neighbourhood.
+
+This makes the reinforcement meaningful because the context set is selected by relevance rather than being the entire flat store. The Physarum organism finds the shortest path because it withdraws cytoplasm from routes that carry no flux; the equivalent here is withdrawing memories from the context window that are not connected to what is currently being discussed.
+
+The ICP layer complicates this. `getPublicMemories()` calls the canister or mock cache, not the PostgreSQL graph. The graph-guided retrieval needs to query the graph in PostgreSQL first, then either cross-reference against ICP records or treat the graph nodes themselves as the retrieval source for LLM context. This is a meaningful architectural decision: the graph becomes the primary retrieval index, and ICP becomes the durable ownership record rather than the active recall layer.
+
+That decision should be made deliberately before implementing, because it changes the relationship between the two storage layers.
+
+---
+
 ## Entry 004 — 2026-03-12
 ### Implementing dynamic edge weights: the Physarum model in code
 
