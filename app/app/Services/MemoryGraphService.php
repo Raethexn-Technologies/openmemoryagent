@@ -219,6 +219,129 @@ class MemoryGraphService
     }
 
     /**
+     * Retrieve the Physarum neighbourhood most relevant for the current context window.
+     *
+     * Seeds are the public nodes with the highest accumulated edge weight: the nodes
+     * the Physarum model considers most important because they have been co-activated
+     * with many other nodes across many turns. BFS from those seeds collects neighbours
+     * in weight-descending order up to $limit.
+     *
+     * Returns records in the same shape as IcpMemoryService::getPublicMemories() so the
+     * caller can pass the result directly to LlmService::buildSystemPrompt() without
+     * any format conversion.
+     *
+     * Returns an empty array on cold start (no public nodes in the graph yet). The caller
+     * is responsible for falling back to flat ICP recall in that case.
+     *
+     * @return array<int, array{id: string, content: string, timestamp: string}>
+     */
+    public function retrieveContext(string $userId, int $limit = 12): array
+    {
+        $seeds = $this->findContextSeeds($userId, 4);
+
+        if ($seeds->isEmpty()) {
+            return [];
+        }
+
+        $collected = collect($seeds);
+        $visited = $seeds->pluck('id');
+        $frontier = $seeds->pluck('id');
+
+        while ($collected->count() < $limit && $frontier->isNotEmpty()) {
+            $edges = MemoryEdge::where('user_id', $userId)
+                ->where(function ($q) use ($frontier) {
+                    $q->whereIn('from_node_id', $frontier)
+                        ->orWhereIn('to_node_id', $frontier);
+                })
+                ->orderByDesc('weight')
+                ->get();
+
+            $neighborIds = $edges
+                ->flatMap(fn ($e) => [$e->from_node_id, $e->to_node_id])
+                ->unique()
+                ->diff($visited);
+
+            if ($neighborIds->isEmpty()) {
+                break;
+            }
+
+            $neighborsById = MemoryNode::where('user_id', $userId)
+                ->where('sensitivity', 'public')
+                ->whereIn('id', $neighborIds)
+                ->get()
+                ->keyBy('id');
+
+            $neighbors = $neighborIds
+                ->map(fn ($id) => $neighborsById->get($id))
+                ->filter();
+
+            $collected = $collected->merge($neighbors)->unique('id')->take($limit);
+            $visited = $visited->merge($neighbors->pluck('id'))->unique();
+            $frontier = $neighbors->pluck('id');
+        }
+
+        return $collected
+            ->map(fn ($n) => [
+                'id' => $n->id,
+                'content' => $n->content,
+                'timestamp' => $n->created_at?->toIso8601String() ?? now()->toIso8601String(),
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Find the seed nodes for context retrieval.
+     *
+     * Scores each public node by the sum of weights on all its connected edges.
+     * Nodes that have been frequently co-activated accumulate higher total weight
+     * and are selected as seeds, which means BFS starts from the parts of the graph
+     * the Physarum model has found most important.
+     *
+     * A bounded candidate pool of the 60 most recently created public nodes prevents
+     * the query from becoming expensive on large graphs.
+     */
+    private function findContextSeeds(string $userId, int $count): \Illuminate\Support\Collection
+    {
+        $candidates = MemoryNode::where('user_id', $userId)
+            ->where('sensitivity', 'public')
+            ->latest()
+            ->limit(60)
+            ->get();
+
+        if ($candidates->isEmpty()) {
+            return collect();
+        }
+
+        $candidateIds = $candidates->pluck('id');
+
+        $edges = MemoryEdge::where('user_id', $userId)
+            ->where(function ($q) use ($candidateIds) {
+                $q->whereIn('from_node_id', $candidateIds)
+                    ->orWhereIn('to_node_id', $candidateIds);
+            })
+            ->get();
+
+        $scores = $candidates->mapWithKeys(fn ($node) => [
+            $node->id => $edges
+                ->filter(fn ($e) => $e->from_node_id === $node->id || $e->to_node_id === $node->id)
+                ->sum('weight'),
+        ]);
+
+        return $candidates
+            ->sort(function ($left, $right) use ($scores) {
+                $scoreComparison = $scores[$right->id] <=> $scores[$left->id];
+                if ($scoreComparison !== 0) {
+                    return $scoreComparison;
+                }
+
+                return ($right->created_at?->getTimestamp() ?? 0) <=> ($left->created_at?->getTimestamp() ?? 0);
+            })
+            ->take($count)
+            ->values();
+    }
+
+    /**
      * Look up the graph nodes that correspond to a set of ICP memory records,
      * call reinforce() on their IDs, and return those IDs for the API response.
      *

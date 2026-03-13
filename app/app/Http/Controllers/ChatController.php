@@ -110,18 +110,25 @@ class ChatController extends Controller
             'content' => $validated['message'],
         ]);
 
-        // Retrieve only Public memories for LLM context.
-        // Private and Sensitive records are never fed to the LLM — see IcpMemoryService::getPublicMemories().
-        $memories = $this->icp->getPublicMemories($userId);
+        // Graph-guided retrieval: use the Physarum neighbourhood seeded from the
+        // highest-weight nodes rather than loading the entire flat public set.
+        // Only the retrieved neighbourhood is reinforced, so edge weights reflect
+        // genuine relevance rather than uniform co-occurrence across all public memories.
+        //
+        // Cold start (no graph nodes yet): fall back to flat ICP recall so the first
+        // few turns still inject memory context while the graph is being built.
+        $graphContext = $this->graphService->retrieveContext($userId);
 
-        // Identify which graph nodes correspond to the memories loaded into context,
-        // then reinforce the edges between them (Physarum/Hebbian update).
-        // The returned node IDs are also sent to the browser so the Three.js
-        // visualization can animate the nodes that were active this turn.
-        $loadedNodeIds = $this->graphService->reinforceFromMemories($memories, $userId);
-
-        // Build prompt with memory context
-        $systemPrompt = $this->llm->buildSystemPrompt($memories);
+        if (! empty($graphContext)) {
+            $loadedNodeIds = array_column($graphContext, 'id');
+            $this->graphService->reinforce($loadedNodeIds, $userId);
+            $systemPrompt = $this->llm->buildSystemPrompt($graphContext);
+        } else {
+            // Cold start: graph is empty; fall back to flat ICP recall.
+            $memories = $this->icp->getPublicMemories($userId);
+            $loadedNodeIds = $this->graphService->reinforceFromMemories($memories, $userId);
+            $systemPrompt = $this->llm->buildSystemPrompt($memories);
+        }
 
         // Get recent conversation history for context
         $history = Message::where('session_id', $sessionId)

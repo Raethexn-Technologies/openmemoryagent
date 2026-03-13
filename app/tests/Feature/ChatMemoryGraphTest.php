@@ -158,8 +158,10 @@ class ChatMemoryGraphTest extends TestCase
         ]);
     }
 
-    public function test_send_returns_active_node_ids_for_reinforced_memories(): void
+    public function test_send_uses_graph_guided_retrieval_when_graph_has_edges(): void
     {
+        // With graph nodes and edges present, the new flow calls retrieveContext() directly.
+        // getPublicMemories() is never called — the graph is the primary retrieval source.
         $first = MemoryNode::create([
             'user_id' => 'user-1',
             'type' => 'memory',
@@ -190,13 +192,10 @@ class ChatMemoryGraphTest extends TestCase
 
         $this->bindLlmForSend();
 
+        // ICP is NOT consulted for memories when the graph has nodes with edges.
         $icp = Mockery::mock(IcpMemoryService::class);
         $icp->shouldIgnoreMissing();
-        $icp->shouldReceive('getPublicMemories')->once()->with('user-1')->andReturn([
-            ['content' => 'Remember alpha', 'memory_type' => 'public'],
-            ['content' => 'Remember beta', 'memory_type' => 'public'],
-            ['content' => 'No graph node', 'memory_type' => 'public'],
-        ]);
+        $icp->shouldNotReceive('getPublicMemories');
         $icp->shouldReceive('mode')->andReturn('mock');
         $this->app->instance(IcpMemoryService::class, $icp);
 
@@ -220,7 +219,38 @@ class ChatMemoryGraphTest extends TestCase
         $edge->refresh();
 
         $this->assertSame($expectedIds, $activeNodeIds);
+        // The edge between the two co-retrieved nodes is reinforced by ALPHA = 0.10.
         $this->assertEqualsWithDelta(0.6, $edge->weight, 0.0001);
+    }
+
+    public function test_send_falls_back_to_icp_when_graph_is_empty(): void
+    {
+        // Cold start: no graph nodes exist. The system falls back to flat ICP recall.
+        $this->bindLlmForSend();
+
+        $icp = Mockery::mock(IcpMemoryService::class);
+        $icp->shouldIgnoreMissing();
+        $icp->shouldReceive('getPublicMemories')->once()->with('user-cold')->andReturn([
+            ['content' => 'Cold start memory', 'timestamp' => now()->toIso8601String(), 'memory_type' => 'public'],
+        ]);
+        $icp->shouldReceive('isMockMode')->andReturn(true);
+        $icp->shouldReceive('mode')->andReturn('mock');
+        $this->app->instance(IcpMemoryService::class, $icp);
+
+        $summarizer = Mockery::mock(MemorySummarizationService::class);
+        $summarizer->shouldReceive('extract')->once()->andReturn(null);
+        $this->app->instance(MemorySummarizationService::class, $summarizer);
+
+        $response = $this->withSession([
+            'chat_session_id' => 'session-cold',
+            'chat_user_id' => 'user-cold',
+        ])->postJson('/chat/send', [
+            'message' => 'Hello.',
+        ]);
+
+        $response->assertOk();
+        // No graph nodes, so active_node_ids is empty.
+        $this->assertSame([], $response->json('active_node_ids'));
     }
 
     private function bindLlmForSend(): void
