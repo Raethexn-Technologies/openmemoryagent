@@ -573,6 +573,99 @@ The Three.js brain globe renders the system's cognitive history. Thick edges are
 
 ---
 
+## Entry 006 — 2026-03-12
+### Is ICP handling what it should? Research into the correct division of labour
+
+The question this entry answers: given that the system now has a Physarum-model memory graph with dynamic edge weights, is ICP being used for the things it is actually good at, and is PostgreSQL carrying work that should belong to ICP or vice versa?
+
+The short answer is that the current split is partially correct but inverted in one important respect: ICP is handling flat record storage when its most distinctive capability is cryptographic identity enforcement and tamper-proof anchoring, and those properties are not being applied to the graph layer at all, even though the graph is now where the meaningful memory structure lives.
+
+#### What ICP actually is, assessed against the literature
+
+ICP's architecture is not a conventional blockchain. It is a network of subnets where each subnet runs replicated WebAssembly canisters under Byzantine-fault-tolerant consensus. The properties this produces that are relevant here:
+
+**Update calls go through consensus; query calls do not.** Every state-modifying canister call (store, delete, weight update) is executed on all nodes in the subnet and costs cycles proportional to compute and storage. Query calls are answered by a single replica with no consensus, returning within milliseconds at no cycle cost. This distinction is central to the architecture decision below.
+
+**Stable memory supports up to 500 GiB per canister, and enhanced orthogonal persistence now scales the Wasm heap beyond 4 GiB without expensive serialization on upgrade.** The earlier scalability concern for graph storage on ICP has been resolved by the enhanced persistence implementation. Large graphs can technically live on ICP.
+
+**Chain key cryptography is ICP's genuine differentiator.** Threshold ECDSA means that a canister holds an ECDSA private key distributed across subnet nodes as secret shares, with no single node holding the full key. The canister can sign transactions on other blockchains and authenticate cross-chain operations without any party having custody of the key. No other blockchain offers this at the canister execution level.
+
+**msg.caller is cryptographically enforced.** The principal that signed an ingress message is verifiable in the canister at execution time. Application-layer trust (a server asserting "this request is from user X") is categorically different from this. The current system uses this property for memory record ownership, and that usage is correct.
+
+**ICP is a CP system under the CAP theorem.** Consensus makes writes strongly consistent at the cost of latency. The PACELC extension (Abadi, 2012) adds that even without partitions, ICP trades latency for consistency. For operations that must happen on every single chat turn in under a second, consensus latency is a structural problem.
+
+#### What Kinic and zkTAM reveal about the frontier
+
+Kinic (2025, icme.io) built a portable AI memory store directly on ICP, specifically choosing ICP for three properties: cheap stable memory storage, vetKey for encryption at rest with user-owned keys, and threshold ECDSA for cross-chain signing. Their vector database (Vectune) runs as Wasm on ICP and uses WebAuthn rather than Ed25519 KeyIdentity, so the user's biometric or hardware token is the signing device and no private key is ever held in browser localStorage.
+
+Their zkTAM (Trustless Agentic Memory) framework adds a zero-knowledge proof layer on top: when an agent generates a response, a zkML proof can attest that the agent used specific verified memory records when computing that response. The memory is not just owner-controlled; it is cryptographically provable which memories influenced which outputs.
+
+This is the research frontier for this system. The current architecture proves that the storage layer enforces its own access control. zkTAM proves that the reasoning layer used the correct storage.
+
+#### The CAP theorem applied to this specific system
+
+The Physarum decay model runs daily and updates every edge in the graph. The Hebbian reinforcement runs on every chat turn and updates every edge between the co-accessed nodes. These are frequent, low-latency, low-stakes writes. Routing them through ICP consensus would cost cycles per edge per update and introduce latency that accumulates across every chat turn.
+
+PostgreSQL is an AP-leaning system (available, partition-tolerant) under CAP, which is correct for the working graph. Reads are fast. Writes are fast. The graph weights can be slightly stale without breaking anything. If the system crashes and restarts, the weights are recovered from the last committed state, not reconstructed from consensus.
+
+ICP is a CP system. Reads (query calls) are fast. Writes (update calls) go through consensus. This is correct for the ownership layer: when a memory record is written to ICP, it must be consistent across all nodes because the msg.caller enforcement depends on it. You cannot have partition tolerance on identity enforcement without risking a split-brain attack where two nodes disagree about who owns a record.
+
+The current system already respects this split implicitly. The graph lives in PostgreSQL because PostgreSQL is fast. The records live in ICP because ICP enforces identity. The research confirms that this is the correct alignment, not an accident.
+
+#### What is wrong with the current implementation
+
+The graph layer has no ownership enforcement. Any server process can create nodes, update weights, and build edges for any user. The Physarum decay runs as a server-side scheduled command and modifies edge weights globally without the user's knowledge or consent. This is identical to the original problem that ICP was introduced to solve for memory records, now reproduced at the graph layer.
+
+The specific gap: when the graph becomes the primary retrieval source (Principle 2 from Entry 003), graph nodes become more influential on agent behaviour than the raw ICP records. A graph node with high edge weight will be retrieved preferentially and loaded into the LLM context. If graph nodes are not user-owned, then the ownership guarantee of the ICP layer is effectively bypassed: the user owns the raw text of the memory on ICP, but the server controls which memories the agent actually uses by manipulating graph weights.
+
+This is not a hypothetical risk. It is the same trust boundary problem described in VISION.md under "What This Does Not Prove," now appearing one layer up.
+
+#### The correct division of labour going forward
+
+Mapping each component against ICP's actual properties:
+
+**ICP should own:**
+
+The raw memory records, as currently implemented. This is correct and proven.
+
+A graph ownership registry: a lightweight canister mapping each user's principal to a declared graph fingerprint. The fingerprint is a hash or Merkle root of the graph structure at a point in time. The user signs the fingerprint on graph operations they approve, creating a verifiable audit trail of which graph structure they acknowledged. This does not require the full graph to live on ICP; it requires only the fingerprint of a graph state the user has seen and signed.
+
+Cross-agent access grants. When Agent A's memory graph references a node that Agent B also holds, the canister mediates the permission: Agent B's principal is granted read access to Agent A's specific node by Agent A's signed approval. This is currently unimplemented because there is only one agent, but it is the correct mechanism for the multi-agent visualization described in Entry 002.
+
+Identity: the Ed25519 KeyIdentity in localStorage is the correct starting point, but Kinic's WebAuthn approach is the correct upgrade path. The user's face or hardware token becomes the signing device. The private key never touches application memory.
+
+**PostgreSQL should own:**
+
+The working graph: nodes, edges, weights, access counts, timestamps. All Physarum dynamics stay here. Graph traversal stays here. Neighbourhood retrieval stays here. The speed properties of PostgreSQL are required for these operations to complete within a chat turn.
+
+The LLM context assembly: the graph-guided retrieval query runs against PostgreSQL, not against ICP. ICP does not have the query primitives (SQL joins, index traversal, degree ordering) needed for this efficiently.
+
+The decay scheduler and Hebbian reinforcement, exactly as currently implemented.
+
+**The bridge between layers:**
+
+When the graph-guided retrieval selects a set of nodes to load into LLM context, those nodes correspond to ICP memory records via the content-equality join currently in `reinforceFromMemories()`. The ICP record proves ownership; the PostgreSQL weight proves relevance. Both properties together form a complete picture: this memory is owned by this principal (ICP) and it is currently important to this conversation (PostgreSQL weight).
+
+When a graph node is created from a confirmed ICP write, the ICP record ID should be stored as metadata on the PostgreSQL node. The link then runs in both directions: from ICP record ID to graph node, and from graph node back to ICP record ID.
+
+#### What this means for the Three.js visualization
+
+The Three.js brain visualization (Entry 002) will show edge weights from PostgreSQL. Those weights reflect the Physarum dynamics: thick edges are Hebbian paths, thin edges are dormant connections, animated nodes are what the LLM just loaded. This is the correct data source for live cognitive state visualization.
+
+The ICP layer contributes the ownership coloring: nodes whose ICP records are publicly readable glow differently from nodes whose records are private or sensitive. The visualization makes the trust boundary visible: you can see, at a glance, which parts of the brain are public and which parts are owner-gated, because the canister enforces that distinction and the graph metadata reflects it.
+
+The multi-agent view (Entry 002, deferred) becomes architecturally clear: each agent's graph is a PostgreSQL partition; the shared node between two agents is one ICP record that both agents' principals have been granted access to by the owner's signed approval. You see two subgraphs with a glowing shared node between them, and the canister enforces that the sharing is real.
+
+#### zkTAM as the next research horizon
+
+The most important finding from this research pass is that Kinic has already demonstrated verifiable AI memory on ICP using zero-knowledge proofs. Their zkTAM system produces a proof that a specific set of memory records was used in a specific inference. This is the answer to the open research question in VISION.md: "Can the summarization step itself be user-verifiable?"
+
+The current system cannot answer that question. The user can approve which memories are stored, but they cannot verify which memories the LLM actually used when generating a response. zkTAM would close that gap. The `active_node_ids` field now returned by `/chat/send` is the precondition for this: it is the set of nodes that were loaded into context this turn, and it is the input to the zkML proof.
+
+The research trajectory is therefore: graph-guided retrieval narrows the context set, active_node_ids identifies which memories were used, and eventually a zkML proof attests that those specific memories were the ones that influenced the output. The ownership layer (ICP) then has a proof to anchor, not just a record to store.
+
+---
+
 ## Entry 005 — 2026-03-12
 ### Code review findings: decay portability, Hebbian signal quality, and the retrieval gap
 

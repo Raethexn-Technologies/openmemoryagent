@@ -186,16 +186,35 @@ This project is one concrete implementation. The questions it surfaces are more 
 
 ---
 
+## The Correct Division of Labour Between ICP and PostgreSQL
+
+Research into ICP's actual architecture (Entry 006 in DEVLOG) produced a more precise picture of what each layer should own and why.
+
+ICP is a CP system under the CAP theorem. Update calls go through consensus, which makes writes strongly consistent but introduces latency. Query calls are answered by a single replica with no consensus, returning in milliseconds. Chain key cryptography (Threshold ECDSA) is ICP's genuine differentiator: the canister holds a distributed private key where no single node has custody, enabling cryptographic identity enforcement that no application layer can replicate.
+
+PostgreSQL is an AP-leaning system. Reads and writes are fast. Graph traversal, index queries, degree calculations, and weight updates all run within a chat turn. Physarum decay (daily bulk update) and Hebbian reinforcement (per-turn edge increment) require the speed of PostgreSQL and would be prohibitively expensive as ICP update calls.
+
+The correct split is therefore:
+
+**ICP owns:** raw memory records with msg.caller enforcement, a graph ownership registry (fingerprints of graph states the user has signed), cross-agent access grants, and the user's principal identity. These properties require consensus-grade consistency. They change infrequently. They must be tamper-proof.
+
+**PostgreSQL owns:** the working memory graph (nodes, edges, weights), all Physarum dynamics, graph traversal for LLM context assembly, and Hebbian reinforcement on every chat turn. These operations must complete within a single request cycle. Slightly stale weights are acceptable; consensus latency is not.
+
+**The bridge:** each PostgreSQL graph node stores the ICP record ID of its source memory as metadata, so ownership and relevance are both accessible from a single node record. When graph-guided retrieval selects nodes for LLM context, the ICP record proves ownership and the PostgreSQL weight proves current relevance.
+
+The graph layer currently has no ownership enforcement, which reproduces at the graph level the same trust boundary problem ICP was introduced to solve at the record level. A graph ownership registry on ICP (signing graph fingerprints) is the correct fix, not moving the full graph to ICP.
+
 ## Next Steps if This Were Productionized
 
 These are not near-term goals; they are the research trajectory the design points toward.
 
-- Internet Identity or WebAuthn for key custody: swap the identity source, keep everything else
-- User-correctable classification: let users re-classify or delete memories they disagree with
-- Opt-in private recall: a user-gated path for the LLM to access private memories for a session
-- Memory portability: export principal and records, import into another application that uses the same canister interface
-- Verifiable summarization: a commitment scheme that lets users audit the relationship between conversation and stored summary
-- Cross-device sync via an encrypted key vault, or replace Ed25519KeyIdentity with Internet Identity entirely
+- Internet Identity or WebAuthn for key custody: Kinic has already demonstrated WebAuthn as the signing device on ICP, meaning the user's biometric or hardware token replaces Ed25519 KeyIdentity in localStorage. Swapping the identity source requires no other architectural change.
+- Graph ownership registry on ICP: a lightweight canister that maps each principal to a signed fingerprint of their acknowledged graph state, so the graph layer gains the same tamper-proof ownership property that the record layer already has.
+- User-correctable classification: let users re-classify or delete memories they disagree with, and propagate the correction through the graph (update node sensitivity, remove or reclassify edges).
+- Opt-in private recall: a user-gated path for the LLM to access private memories for a session, with the canister returning private records only after the user's signed approval for that session.
+- Memory portability: export principal and records, import into another application that uses the same canister interface. The graph is reconstructible from the ICP records by re-running graph extraction.
+- zkTAM (Trustless Agentic Memory): Kinic's framework applies zero-knowledge proofs to prove that an agent used specific verified memories when generating a response. The active_node_ids field now returned by /chat/send is the precondition for this: it identifies exactly which memories were loaded into context for each turn. A zkML proof over that set closes the open research question about verifiable summarization.
+- Graph-guided retrieval replacing flat getPublicMemories(): retrieve the Hebbian neighbourhood of the most recently active nodes rather than the full public set, so Physarum edge weights carry a genuine relevance signal instead of reflecting uniform co-occurrence across all public memories.
 
 ---
 
