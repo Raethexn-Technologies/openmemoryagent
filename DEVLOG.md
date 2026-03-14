@@ -10,6 +10,8 @@ Three documents, three purposes:
 
 - **README.md** — how to run it
 - **VISION.md** — the research position: design decisions, what this proves, what it doesn't, open questions. Updated when the thinking matures.
+- **RESEARCH.md** — the active research agenda: open scientific claims, what needs to be built to test each one, and how tracks evolve as discoveries open new questions. Tracks close into VISION.md when findings stabilize.
+- **SCIENCE.md** — plain-language explanations of the mathematics and biology behind the graph layer, with source citations and references to the tests that verify each formula.
 - **DEVLOG.md** (this file) — the captain's log. Appended to as features are built. Implementation findings, security incidents, architectural tensions, unresolved problems. When a finding in here stabilizes into a design decision, it graduates into VISION.md.
 
 The log is append-only. Entries are not edited after the fact.

@@ -4,7 +4,7 @@
 
 This document is the research record for OpenMemoryAgent. It is not a setup guide (see README.md) and not a feature list. It captures the design questions driving the project, what was actually learned building it, what the implementation honestly proves, and where the hard problems remain.
 
-For the running implementation log — what was discovered building specific features, security findings, and what remains unresolved — see [DEVLOG.md](./DEVLOG.md). VISION.md is the stable research position; DEVLOG.md is the honest record of how it got there.
+For the running implementation log — what was discovered building specific features, security findings, and what remains unresolved — see [DEVLOG.md](./DEVLOG.md). For the active research agenda — open scientific claims, what needs to be built to test each one, and how tracks evolve — see [RESEARCH.md](./RESEARCH.md). VISION.md is the stable research position; DEVLOG.md is the honest record of how it got there; RESEARCH.md is the living frontier.
 
 ---
 

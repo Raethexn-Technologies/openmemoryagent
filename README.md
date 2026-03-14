@@ -2,7 +2,7 @@
 
 An experimental chat application exploring what AI memory looks like when the storage layer enforces its own access control instead of delegating that to the host application. The user's browser holds an Ed25519 signing key; writes to the ICP canister are authenticated with that key so the server cannot write memory records under a user's identity. A typed memory graph sits in PostgreSQL alongside the canister records, tracking relationships between memories and applying Physarum conductance dynamics that shift edge weights based on how the agent actually uses each connection over time.
 
-[VISION.md](./VISION.md) covers the design decisions and research questions in depth. [DEVLOG.md](./DEVLOG.md) is the running record of what was discovered building it: implementation findings, security fixes, architectural tensions, and what remains unresolved.
+[VISION.md](./VISION.md) covers the design decisions and research questions in depth. [DEVLOG.md](./DEVLOG.md) is the running record of what was discovered building it: implementation findings, security fixes, architectural tensions, and what remains unresolved. [RESEARCH.md](./RESEARCH.md) is the active research agenda: the open scientific claims, what needs to be built to test each one, and how the tracks evolve as discoveries open new questions. [SCIENCE.md](./SCIENCE.md) explains the mathematics and biology behind the graph layer in plain terms, with source citations and references to the tests that verify each formula.
 
 ---
 
@@ -125,6 +125,20 @@ The multi-agent simulation is available at `/agents`. Create agents, adjust trus
 
 ---
 
+## Seeding demo data
+
+The `simulate:day` command generates a realistic 8-hour workday of memory activity without requiring an API key or a live ICP canister. It creates memory nodes across four topic clusters (technical decisions, project planning, research concepts, and personal workflow), wires edges, runs six Physarum reinforcement turns, creates three agents with different trust scores, and takes a graph snapshot. All five surfaces have data to render after it completes.
+
+```bash
+php artisan simulate:day                 # 40 memories (default)
+php artisan simulate:day --fresh         # wipe existing demo data first
+php artisan simulate:day --memories=60   # denser graph
+```
+
+After the command completes, navigate to `/graph` to see the memory graph, `/agents` to see Nexus, Beacon, and Ghost, and `/3d` for the mission control surface.
+
+---
+
 ## Edge weight decay
 
 A daily Artisan command applies the Physarum decay factor to all edges in the graph:
@@ -182,7 +196,8 @@ OpenMemoryAgent/
 │   ├── app/
 │   │   ├── Console/Commands/
 │   │   │   ├── DecayMemoryEdges.php         # php artisan memory:decay
-│   │   │   └── TakeGraphSnapshot.php        # php artisan graph:snapshot (runs every 15 min)
+│   │   │   ├── TakeGraphSnapshot.php        # php artisan graph:snapshot (runs every 15 min)
+│   │   │   └── SimulateDay.php              # php artisan simulate:day (demo seeder)
 │   │   ├── Http/Controllers/
 │   │   │   ├── ChatController.php           # chat, memory store, graph sync endpoints
 │   │   │   ├── GraphController.php          # graph data, neighborhood, clusters, snapshots, /3d
