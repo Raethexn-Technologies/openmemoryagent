@@ -229,6 +229,7 @@ let heatSpheres = [] // {mesh, clusterId}
 let activePulses = []    // expanding wireframe rings spawned on node activation
 let particleSlots = []   // pool of reusable particle slots
 let edgeEndpoints = []   // [{from, to, sourceId, targetId, weight}] for particle spawning
+let edgeEndpointMap = new Map() // edge_id -> edge endpoint record for live weight updates
 const MAX_PARTICLES = 400
 let nodePositions = new Map()   // node_uuid -> THREE.Vector3
 let nodeIndexMap = new Map()    // node_uuid -> instancedMesh index
@@ -260,6 +261,10 @@ function jaccardColor(j) {
   if (j >= 0.7) return '#4ade80'
   if (j >= 0.4) return '#facc15'
   return '#f87171'
+}
+
+function intraEdgeBrightness(weight) {
+  return 0.15 + weight * 0.75
 }
 
 // ── Cluster heat color interpolation ─────────────────────────────────────────
@@ -401,6 +406,7 @@ function disposeScene() {
   activePulses = []
   particleSlots = []
   edgeEndpoints = []
+  edgeEndpointMap = new Map()
 
   if (lineSegments) {
     scene?.remove(lineSegments)
@@ -699,11 +705,20 @@ async function buildScene() {
     edgePositions[k * 6 + 0] = fromPos.x; edgePositions[k * 6 + 1] = fromPos.y; edgePositions[k * 6 + 2] = fromPos.z
     edgePositions[k * 6 + 3] = toPos.x;   edgePositions[k * 6 + 4] = toPos.y;   edgePositions[k * 6 + 5] = toPos.z
     // sky-400 (#38bdf8) = R:0.220 G:0.741 B:0.973 — brighter for heavier edges
-    const b = 0.15 + edge.weight * 0.75
+    const b = intraEdgeBrightness(edge.weight)
     edgeColors[k * 6 + 0] = 0.220 * b; edgeColors[k * 6 + 1] = 0.741 * b; edgeColors[k * 6 + 2] = 0.973 * b
     edgeColors[k * 6 + 3] = 0.220 * b; edgeColors[k * 6 + 4] = 0.741 * b; edgeColors[k * 6 + 5] = 0.973 * b
     // Store for particle traversal
-    edgeEndpoints.push({ from: fromPos.clone(), to: toPos.clone(), sourceId: edge.source, targetId: edge.target, weight: edge.weight })
+    const endpoint = {
+      id: edge.id,
+      from: fromPos.clone(),
+      to: toPos.clone(),
+      sourceId: edge.source,
+      targetId: edge.target,
+      weight: edge.weight,
+    }
+    edgeEndpoints.push(endpoint)
+    edgeEndpointMap.set(edge.id, endpoint)
   })
 
   // Cross-partition shared edges: violet, brighter with higher weight
@@ -870,7 +885,9 @@ async function runSimTick() {
 function flashActiveNodes(activeIds) {
   if (!instancedMesh) return
   const matrix = new THREE.Matrix4()
+  const activeSet = new Set(activeIds)
 
+  // Scale up active nodes and spawn expanding pulse rings at each
   for (const nodeId of activeIds) {
     const idx = nodeIndexMap.get(nodeId)
     if (idx === undefined) continue
@@ -878,13 +895,25 @@ function flashActiveNodes(activeIds) {
     const pos = new THREE.Vector3()
     pos.setFromMatrixPosition(matrix)
     const baseScale = nodeScaleMap.get(nodeId) ?? 1
-    const scaleUp = new THREE.Vector3(baseScale * 1.6, baseScale * 1.6, baseScale * 1.6)
-    matrix.compose(pos, new THREE.Quaternion(), scaleUp)
+    matrix.compose(pos, new THREE.Quaternion(), new THREE.Vector3(baseScale * 1.8, baseScale * 1.8, baseScale * 1.8))
     instancedMesh.setMatrixAt(idx, matrix)
+    // Pulse ring — an expanding wireframe sphere that fades out
+    spawnPulse(pos, 0x38bdf8)
   }
   instancedMesh.instanceMatrix.needsUpdate = true
 
-  // Reset scale after 400ms
+  // Spawn traversal particles along every edge touching an active node
+  for (const ep of edgeEndpoints) {
+    const srcActive = activeSet.has(ep.sourceId)
+    const tgtActive = activeSet.has(ep.targetId)
+    if (!srcActive && !tgtActive) continue
+    // Particle flows from source to target
+    spawnParticle(ep.from, ep.to, ep.weight)
+    // Heavier edges emit a return particle too (bidirectional signal)
+    if (ep.weight > 0.55) spawnParticle(ep.to, ep.from, ep.weight)
+  }
+
+  // Reset node scale after flash
   setTimeout(() => {
     if (!instancedMesh) return
     for (const nodeId of activeIds) {
@@ -894,12 +923,11 @@ function flashActiveNodes(activeIds) {
       const pos = new THREE.Vector3()
       pos.setFromMatrixPosition(matrix)
       const baseScale = nodeScaleMap.get(nodeId) ?? 1
-      const scaleNormal = new THREE.Vector3(baseScale, baseScale, baseScale)
-      matrix.compose(pos, new THREE.Quaternion(), scaleNormal)
+      matrix.compose(pos, new THREE.Quaternion(), new THREE.Vector3(baseScale, baseScale, baseScale))
       instancedMesh.setMatrixAt(idx, matrix)
     }
     instancedMesh.instanceMatrix.needsUpdate = true
-  }, 400)
+  }, 450)
 }
 
 function updateEdgeColors(updatedEdges) {
@@ -909,7 +937,9 @@ function updateEdgeColors(updatedEdges) {
   for (const edge of updatedEdges) {
     const k = edgeIndexMap.get(edge.id)
     if (k === undefined) continue
-    const b = 0.08 + edge.weight * 0.55
+    const endpoint = edgeEndpointMap.get(edge.id)
+    if (endpoint) endpoint.weight = edge.weight
+    const b = intraEdgeBrightness(edge.weight)
     colors[k * 6 + 0] = 0.220 * b; colors[k * 6 + 1] = 0.741 * b; colors[k * 6 + 2] = 0.973 * b
     colors[k * 6 + 3] = 0.220 * b; colors[k * 6 + 4] = 0.741 * b; colors[k * 6 + 5] = 0.973 * b
   }
@@ -976,12 +1006,90 @@ function onScrub(value) {
   }
 }
 
+// ── Traversal particle helpers ────────────────────────────────────────────────
+
+function spawnParticle(from, to, weight) {
+  const slot = particleSlots.find(s => !s.active)
+  if (!slot) return
+  slot.active = true
+  slot.from = from
+  slot.to = to
+  slot.progress = 0
+  slot.speed = 0.011 + weight * 0.009  // heavier edges carry faster signals
+}
+
+function spawnPulse(pos, hexColor) {
+  if (!scene) return
+  const geo = new THREE.SphereGeometry(1, 10, 10)
+  const mat = new THREE.MeshBasicMaterial({
+    color: hexColor,
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    wireframe: true,
+  })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.position.copy(pos)
+  scene.add(mesh)
+  activePulses.push({ mesh, time: 0, maxTime: 1.1 })
+}
+
+function updateParticles() {
+  if (!particleSystem || particleSlots.length === 0) return
+  const mat = new THREE.Matrix4()
+  const pos = new THREE.Vector3()
+
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    const slot = particleSlots[i]
+    if (!slot.active) {
+      mat.makeScale(0.001, 0.001, 0.001)
+      particleSystem.setMatrixAt(i, mat)
+      continue
+    }
+    slot.progress += slot.speed
+    if (slot.progress >= 1.0) {
+      slot.active = false
+      mat.makeScale(0.001, 0.001, 0.001)
+    } else {
+      pos.lerpVectors(slot.from, slot.to, slot.progress)
+      // Ease in and out — particle is largest at the midpoint
+      const ease = Math.sin(slot.progress * Math.PI)
+      const s = 0.08 + ease * 0.55
+      mat.compose(pos, new THREE.Quaternion(), new THREE.Vector3(s, s, s))
+    }
+    particleSystem.setMatrixAt(i, mat)
+  }
+  particleSystem.instanceMatrix.needsUpdate = true
+}
+
+function updatePulses() {
+  if (!scene) return
+  for (let i = activePulses.length - 1; i >= 0; i--) {
+    const pulse = activePulses[i]
+    pulse.time += 0.016
+    const t = pulse.time / pulse.maxTime
+    if (t >= 1) {
+      scene.remove(pulse.mesh)
+      pulse.mesh.geometry.dispose()
+      pulse.mesh.material.dispose()
+      activePulses.splice(i, 1)
+      continue
+    }
+    pulse.mesh.scale.setScalar(1 + t * 11)
+    pulse.mesh.material.opacity = 0.5 * (1 - t)
+    pulse.mesh.material.needsUpdate = true
+  }
+}
+
 // ── Render loop ───────────────────────────────────────────────────────────────
 function animate() {
   animationFrameId = requestAnimationFrame(animate)
   // Pause the slow orbit while the user is watching the simulation tick
   if (controls) controls.autoRotate = !simRunning.value
   controls.update()
+  updateParticles()
+  updatePulses()
   renderer.render(scene, camera)
 }
 
