@@ -18,8 +18,11 @@
 
         <!-- Nav links -->
         <div class="flex items-center gap-1">
-          <NavLink href="/chat" :active="$page.url.startsWith('/chat')">Chat</NavLink>
-          <NavLink href="/memory" :active="$page.url.startsWith('/memory')">Memory Inspector</NavLink>
+          <NavLink href="/chat"    :active="$page.url.startsWith('/chat')">Chat</NavLink>
+          <NavLink href="/memory"  :active="$page.url.startsWith('/memory')">Memory</NavLink>
+          <NavLink href="/graph"   :active="$page.url.startsWith('/graph')">Graph</NavLink>
+          <NavLink href="/agents"  :active="$page.url.startsWith('/agents')">Agents</NavLink>
+          <NavLink href="/3d"      :active="$page.url === '/3d'">3D</NavLink>
         </div>
 
         <!-- Global mode badge — honest about what's connected -->

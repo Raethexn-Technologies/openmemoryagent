@@ -97,6 +97,31 @@
         </div>
       </div>
 
+      <!-- Demo seed -->
+      <div class="px-3 py-3 border-t border-slate-800">
+        <p class="text-xs font-medium text-slate-500 mb-2 uppercase tracking-wide">Demo</p>
+        <p class="text-xs text-slate-600 mb-2 leading-relaxed">
+          Seeds 40 realistic memories, wires edges, runs Physarum turns, and creates Nexus, Beacon, and Ghost agents.
+        </p>
+        <label class="flex items-center gap-2 mb-2 cursor-pointer">
+          <input type="checkbox" v-model="demoFresh" class="accent-violet-500" />
+          <span class="text-xs text-slate-400">Reset existing data first</span>
+        </label>
+        <button
+          @click="runDemoSimulation"
+          :disabled="simulatingDemo"
+          class="w-full px-3 py-1.5 text-xs bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-40 disabled:cursor-not-allowed mb-1"
+        >
+          {{ simulatingDemo ? 'Seeding…' : 'Seed demo day' }}
+        </button>
+        <div v-if="demoResult" class="text-xs text-emerald-400 text-center mt-1">
+          {{ demoResult }}
+        </div>
+        <div v-if="demoError" class="text-xs text-red-400 text-center mt-1">
+          {{ demoError }}
+        </div>
+      </div>
+
       <!-- Run all -->
       <div class="px-3 py-3 border-t border-slate-800">
         <button
@@ -261,6 +286,10 @@ const creating = ref(false)
 const seeding = ref({})
 const simulating = ref({})
 const simulatingAll = ref(false)
+const simulatingDemo = ref(false)
+const demoFresh = ref(false)
+const demoResult = ref(null)
+const demoError = ref(null)
 
 // IDs of nodes that appear in more than one agent's current result set.
 const sharedNodeIds = computed(() => {
@@ -391,6 +420,31 @@ function mergeResult(data) {
     results.value[idx] = data
   } else {
     results.value.push(data)
+  }
+}
+
+async function runDemoSimulation() {
+  if (simulatingDemo.value) return
+  simulatingDemo.value = true
+  demoResult.value = null
+  demoError.value = null
+  try {
+    const url = '/api/demo/simulate-day' + (demoFresh.value ? '?fresh=1' : '')
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'X-CSRF-TOKEN': csrfToken() },
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      demoError.value = data.error ?? 'Simulation failed.'
+      return
+    }
+    agents.value = data.agents_list ?? agents.value
+    demoResult.value = `${data.nodes} nodes, ${data.edges} edges, ${data.agents} agents, ${data.shared_edges} shared edges`
+  } catch (e) {
+    demoError.value = 'Request failed. Check the console.'
+  } finally {
+    simulatingDemo.value = false
   }
 }
 

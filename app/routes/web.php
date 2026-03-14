@@ -48,3 +48,4 @@ Route::get('/api/agents/alignment', [AgentController::class, 'alignment'])->name
 Route::get('/api/agents/shared-edges', [AgentController::class, 'sharedEdges'])->name('agents.sharedEdges');
 Route::get('/api/agents/{agentId}/graph', [AgentController::class, 'graph'])->name('agents.graph');
 Route::delete('/api/agents/{agentId}', [AgentController::class, 'destroy'])->name('agents.destroy');
+Route::post('/api/demo/simulate-day', [AgentController::class, 'simulateDay'])->name('demo.simulateDay');

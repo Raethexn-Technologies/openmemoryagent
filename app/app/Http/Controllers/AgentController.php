@@ -3,10 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Models\Agent;
+use App\Models\MemoryEdge;
+use App\Models\MemoryNode;
 use App\Models\SharedMemoryEdge;
 use App\Services\MemoryGraphService;
 use App\Services\MultiAgentGraphService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -301,6 +304,53 @@ class AgentController extends Controller
         usort($pairs, fn ($x, $y) => $y['jaccard'] <=> $x['jaccard']);
 
         return response()->json(['pairs' => $pairs]);
+    }
+
+    /**
+     * Seed a realistic 8-hour workday of memory and agent activity for the current user.
+     *
+     * Runs the simulate:day Artisan command against the current session user ID
+     * so the demo data appears in the same graph surfaces the user is already
+     * viewing. The command creates memory nodes, wires edges, runs Physarum
+     * reinforcement turns, creates Nexus/Beacon/Ghost agents, seeds their
+     * partitions, and takes a cluster snapshot — all without calling the LLM API.
+     *
+     * The ?fresh=1 query parameter wipes existing nodes, agents, and shared edges
+     * for this user before seeding, giving a clean baseline for the demo.
+     */
+    public function simulateDay(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $userId = session()->get('chat_user_id');
+        if (! $userId) {
+            return response()->json(['error' => 'No user identity. Please chat once to establish a session, then retry.'], 422);
+        }
+
+        $fresh   = (bool) $request->query('fresh', false);
+        $options = ['--user' => $userId, '--memories' => 40];
+        if ($fresh) {
+            $options['--fresh'] = true;
+        }
+
+        Artisan::call('simulate:day', $options);
+
+        return response()->json([
+            'ok'           => true,
+            'nodes'        => MemoryNode::where('user_id', $userId)->count(),
+            'edges'        => MemoryEdge::where('user_id', $userId)->count(),
+            'agents'       => Agent::where('owner_user_id', $userId)->count(),
+            'shared_edges' => SharedMemoryEdge::where('owner_user_id', $userId)->count(),
+            'agents_list'  => Agent::where('owner_user_id', $userId)
+                ->orderBy('created_at')
+                ->get()
+                ->map(fn ($a) => [
+                    'id'            => $a->id,
+                    'name'          => $a->name,
+                    'graph_user_id' => $a->graph_user_id,
+                    'trust_score'   => $a->trust_score,
+                    'access_count'  => $a->access_count,
+                    'last_active_at' => $a->last_active_at?->toIso8601String(),
+                ]),
+        ]);
     }
 
     /**

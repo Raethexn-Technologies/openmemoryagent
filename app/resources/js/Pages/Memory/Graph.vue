@@ -10,7 +10,7 @@
           <a href="/memory" class="text-slate-500 hover:text-slate-300 text-sm">Inspector</a>
         </div>
         <h1 class="text-base font-semibold text-sky-400">Memory Graph</h1>
-        <p class="text-xs text-slate-500 mt-0.5">Brain-like memory explorer</p>
+        <p class="text-xs text-slate-500 mt-0.5">Physarum-weighted node explorer</p>
       </div>
 
       <!-- Search -->
