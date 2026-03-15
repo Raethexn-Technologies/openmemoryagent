@@ -18,6 +18,45 @@ The log is append-only. Entries are not edited after the fact.
 
 ---
 
+## Entry 015 - 2026-03-14
+### The 3D surface becomes a live cortex visualization, and the cognitive architecture framing opens
+
+#### What was built: the visual improvements
+
+The Three.js mission control surface at `/3d` was substantially rebuilt to make the Physarum dynamics visible rather than implied. The previous version rendered nodes as small uniform spheres and edges as dim grey lines. An operator could see the structure of the graph but could not see it operating.
+
+Four changes make it visible.
+
+**Degree-based hub sizing.** Node radius now scales continuously with degree count using the formula `1.0 + (nodeDegree / maxDegree) * 3.2`. A hub node with the maximum degree in the graph is 4.2× the radius of a leaf node. The scale-free topology becomes immediately legible: a few large glowing orbs surrounded by a field of smaller nodes, with degree gradient visible across the whole scene without consulting a panel. This is the same visual structure that appears in power-law network visualizations from the Barabasi-Albert literature, now rendered directly from the user's actual memory graph.
+
+**Traversal particles.** When the simulation runs and a Physarum tick fires, every edge touching an active node emits a white particle that travels along the edge geometry toward its target. Particle motion follows a sine-curve ease: the particle accelerates at the source, reaches maximum velocity at the midpoint, and decelerates at the target. High-weight edges (above 0.55) emit a return particle as well, creating a bidirectional signal appearance. With 400 pooled particle slots, a typical simulation tick with 8 to 12 active nodes generates 20 to 40 simultaneous particles in flight. This makes the Physarum traversal visible as propagating signal rather than as a flashing indicator.
+
+**Pulse rings.** Each active node emits an expanding wireframe sphere that grows from radius 1 to radius 12 over 1.1 seconds while fading to transparent. This is the same visual language used in physics simulations to show wave propagation: a sharp local event that radiates outward and dissipates. Combined with the traversal particles, the effect reads as a cascade: a node fires (pulse ring), the signal travels along edges (particles), arrives at neighbors, and those nodes may fire in turn on the next tick.
+
+**Starfield and glow aura.** A background field of 2800 stars on a shell between radius 380 and 660 establishes depth and the cosmic scale referenced in the scale-free network comparisons. Every node has a second transparent sphere at 4.0× its radius using additive blending, producing a glow halo proportional to node size. Hub nodes with large halos read as stars. Leaf nodes with small halos read as distant objects. The scene now matches the galaxy cluster metaphor in the documentation with something closer to visual accuracy.
+
+**Graph explorer improvements.** The D3 graph at `/graph` received an SVG glow filter (feGaussianBlur merged with the source graphic) applied to every node circle, a radial gradient background, and edge colors tinted by source node type rather than uniform grey. Edges are now colored by their source node's type color at reduced opacity, making the topology of each node type's connectivity visible without overlaying labels.
+
+#### What the visual work revealed
+
+The particle traversal makes a timing property of the Physarum simulation observable that was previously invisible. When the simulation runs at "fast" speed (350ms between ticks), particles from one tick are still in flight when the next tick fires. The result is a continuous flow of particles through the graph rather than a discrete pulse. This is qualitatively different from what the simulation was designed to show, but it is visually accurate: the LLM is not making one retrieval decision and then waiting; it is continuously traversing a knowledge space. The "fast" mode visualization is a better metaphor for actual inference than the step-by-step "slow" mode.
+
+This suggests a future visualization mode where particles are emitted continuously at a rate proportional to edge weight rather than discretely on simulation ticks. That would show the Physarum steady state as a living flow pattern rather than a repeated event.
+
+#### The cognitive architecture question
+
+A framing question raised during this session: could OpenMemoryAgent become the memory department of a larger encompassing AI system rather than a standalone application?
+
+The answer is yes, and the current architecture already implements the required interfaces. The MCP server is the synaptic protocol between the memory layer and any external reasoning layer. The Physarum dynamics are the plasticity mechanism that adjusts connection strengths based on use. The trust scoring system is the access control model that governs which reasoning systems can read from and write to the memory substrate.
+
+The cognitive architecture model maps the existing components to biological analogs precisely. The memory graph is the hippocampal-cortical system: episodic memories are stored in their raw form, reinforced connections encode semantic structure, and the planned consolidation pipeline implements the hippocampal-to-cortical transfer that biological systems perform during sleep. The LLM connected via MCP is the prefrontal cortex: it receives prepared context from the memory system, reasons over it, and writes new memories back. A perception agent that reads documents and writes structured observations to the graph is the sensory cortex processing input before it reaches working memory. A planning agent that maintains a goal node is the anterior prefrontal maintaining intention over time.
+
+None of this requires new infrastructure. It requires defining the agent roles, implementing the routing between them through the existing MCP interface, and building the benchmark that compares modular cognitive architecture performance against single-model baselines. Track 9 in RESEARCH.md describes that experiment.
+
+The significance of the framing is that it changes the scope of the project's contribution. Building a better memory feature for a chat interface is a product improvement. Building an open, user-sovereign memory subsystem with a standard protocol interface that any cognitive architecture can plug into is infrastructure. The difference is whether other systems can build on it or just use it.
+
+---
+
 ## Entry 014 - 2026-03-14
 ### The product becomes clear: portable sovereign memory you carry across AI systems
 

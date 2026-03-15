@@ -244,6 +244,34 @@ That the technical, structural, and semantic components of a thirty-year memory 
 
 ---
 
+## Track 9: OpenMemoryAgent as a cognitive subsystem
+
+### What opened this track
+
+The observation that the three-component model of cognition (perception, reasoning, memory) maps directly onto the current architecture, and that OpenMemoryAgent occupies the memory position with a well-defined protocol interface (MCP) that any reasoning layer can connect to. If the memory layer is infrastructure rather than a product feature, the question becomes whether a modular cognitive architecture built on sovereign memory infrastructure performs differently from a single-model system on tasks that require long-horizon context, multi-domain synthesis, or explicit knowledge handoff between specialized components.
+
+### What needs to be built
+
+**Cognitive architecture harness.** A configuration layer that wires together multiple specialized agents (perception, reasoning, planning, consolidation) through a shared memory graph. Each agent type has a defined role and a defined MCP interface: the perception agent writes structured observations to the graph, the reasoning agent retrieves relevant context and produces responses, the planning agent maintains goal state as a typed graph node, and the consolidation agent runs the episodic-to-semantic compression on a schedule. The harness does not implement new reasoning capability; it defines the interfaces and the routing rules.
+
+**Perception agent.** An agent that reads documents, web pages, or other structured inputs and writes extracted observations to the memory graph using the existing node type taxonomy. The perception agent does not reason about the content; it structures it. The reasoning agent retrieves what the perception agent has stored when it becomes relevant to a task. This separation means the perception and reasoning steps can use different models optimized for each role.
+
+**Planning agent.** An agent that maintains a goal node in the memory graph. Goal state is a first-class graph node with edges to the memory content relevant to achieving it. The planning agent checks after each reasoning turn whether the current output moved toward the goal and updates the goal node accordingly. Goal progress is therefore traceable in the graph history and visible in the temporal scrubber.
+
+**Consolidation agent.** A scheduled agent that identifies dense clusters of episodic nodes with high mutual edge weight, summarizes them into a single semantic node using an LLM call, replaces the cluster with the semantic node in the graph, and retains thin links back to the original episodic nodes for auditability. This is the hippocampal-to-cortical transfer implemented as a graph operation. The Three.js surface should visualize the consolidation event as the cluster contracting into a single bright hub node.
+
+**Benchmark comparison.** Run a set of tasks requiring long-horizon context against two configurations: a single-model baseline with standard context window management, and the modular architecture with OpenMemoryAgent as the memory layer. Measure task completion rate, factual consistency across turns, and the number of turns before the system loses track of early context. The modular architecture is better if it maintains context coherence for longer and produces fewer factual contradictions, using the same or less compute per turn.
+
+**Architecture diagram in the Three.js surface.** A toggle that switches the mission control view from showing memory graph topology to showing cognitive architecture topology: which agents are active, what their current roles are, which memory regions each agent has accessed recently, and the interface connections between them. This view makes the cognitive architecture legible as a running system rather than as a static diagram.
+
+### What this track proves when closed
+
+That a modular cognitive architecture with OpenMemoryAgent as the memory subsystem either outperforms or matches a single-model baseline on long-horizon context tasks, and that the architectural advantage (if present) scales with the duration of the task and the number of distinct knowledge domains involved. The secondary finding is a reference implementation of each agent type with defined MCP interfaces, which other projects can use as components in their own cognitive architectures.
+
+**Status: open**
+
+---
+
 ## Closed tracks
 
 None yet. This agenda opened on 2026-03-13.

@@ -382,6 +382,26 @@ What changes when you have this: the next AI you open already knows who you are,
 
 ---
 
+## OpenMemoryAgent as a Cognitive Subsystem
+
+The project started as a question about memory ownership. The question it is now positioned to answer is larger: what does a modular, open cognitive architecture look like when the memory layer is infrastructure rather than a feature?
+
+Every sufficiently capable cognitive system requires at minimum three functional components. It needs a reasoning layer that processes current information and generates responses. It needs a perception layer that receives input from the environment. And it needs a memory layer that stores what the system has learned and makes it retrievable when relevant. Biological brains implement these as distinct anatomical structures with defined interfaces between them. The hippocampus consolidates episodic memory and packages it for long-term storage in the cortex. The prefrontal cortex coordinates reasoning and goal maintenance. Sensory cortices handle perception. These systems communicate through synaptic connections whose strength encodes learned relevance, which is exactly what Physarum edge weights do.
+
+The current AI landscape implements all three components inside a single vendor's product. The reasoning layer (the model), the perception layer (the context window and retrieval system), and the memory layer (the conversation history and any fine-tuning) are bundled together and owned by the same company. This bundling produces capable products, but it makes the memory layer non-portable and non-interoperable.
+
+OpenMemoryAgent is the memory subsystem extracted and made sovereign. The MCP protocol is the synaptic interface through which any external reasoning layer (any LLM) connects to the memory layer. The Physarum dynamics are the mechanism by which connection weights adjust based on use, performing the same function that synaptic plasticity serves in biological neural circuits. The trust scoring system is the authorization model that controls which reasoning systems can read from and write to the memory substrate.
+
+A system built on this model would assign each major cognitive function to a specialized component with a well-defined interface. A perception agent reads documents, images, or other inputs and writes structured observations to the memory graph. A reasoning agent runs inference against retrieved memory context and produces responses. A planning agent maintains goal state and monitors whether the reasoning outputs are moving toward it. A consolidation agent runs periodically to compress episodic memory into semantic nodes, implementing the hippocampal-to-cortical transfer that biological memory systems perform during sleep.
+
+None of those agents need to be the same model or run on the same infrastructure. They share a memory graph via the MCP interface, and the Physarum dynamics ensure that the shared graph reflects what the collective system has found important across all their interactions. The cognitive architecture is modular, interoperable, and user-sovereign because the memory layer is.
+
+This is a different research direction from the current frontier in AI, which is scaling individual models. It is closer to the cognitive architecture research of the 1990s (Soar, ACT-R, LIDA) but grounded in modern infrastructure: cryptographic identity, decentralized storage, and protocol-level interoperability rather than monolithic process architectures. Whether it produces more capable systems than scaling alone is an open question. Whether it produces more auditable and user-sovereign systems is not: the architecture makes the memory inspectable, the provenance verifiable, and the ownership unambiguous by construction.
+
+Track 9 in the research agenda describes the experiment that would test whether a modular cognitive architecture built on this memory layer outperforms a single-model baseline on tasks requiring long-horizon context, multi-domain synthesis, or explicit knowledge handoff between specialized subsystems.
+
+---
+
 ## The Thirty-Year Question
 
 The question that only makes sense when memory is infrastructure rather than a product feature: could someone access their memory graph thirty years from now?
