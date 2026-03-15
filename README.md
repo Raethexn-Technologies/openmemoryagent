@@ -1,6 +1,8 @@
 # OpenMemoryAgent
 
-An experimental chat application exploring what AI memory looks like when the storage layer enforces its own access control instead of delegating that to the host application. The user's browser holds an Ed25519 signing key; writes to the ICP canister are authenticated with that key so the server cannot write memory records under a user's identity. A typed memory graph sits in PostgreSQL alongside the canister records, tracking relationships between memories and applying Physarum conductance dynamics that shift edge weights based on how the agent actually uses each connection over time.
+Portable, sovereign, AI-agnostic long-term memory. You own it. You carry it. Every AI you work with plugs into the same memory graph via MCP. When the conversation ends, what you learned goes back in. The next AI you open already knows who you are.
+
+The user's browser holds an Ed25519 signing key; writes to the ICP canister are authenticated with that key so no server can write memory records under a user's identity. A typed memory graph sits in PostgreSQL alongside the canister records, tracking relationships between memories and applying Physarum conductance dynamics that shift edge weights based on how the agent actually uses each connection over time. The MCP server at `icp/mcp-server/server.js` is the protocol endpoint through which any MCP-compatible AI gains access to the memory graph. The chat interface in this repository is the reference implementation showing that the infrastructure works.
 
 [VISION.md](./VISION.md) covers the design decisions and research questions in depth. [DEVLOG.md](./DEVLOG.md) is the running record of what was discovered building it: implementation findings, security fixes, architectural tensions, and what remains unresolved. [RESEARCH.md](./RESEARCH.md) is the active research agenda: the open scientific claims, what needs to be built to test each one, and how the tracks evolve as discoveries open new questions. [SCIENCE.md](./SCIENCE.md) explains the mathematics and biology behind the graph layer in plain terms, with source citations and references to the tests that verify each formula.
 
@@ -245,6 +247,8 @@ OpenMemoryAgent/
 │   │   └── types.mo
 │   ├── adapter/
 │   │   └── server.js                        # read-only adapter in live mode; mock store in mock mode
+│   ├── mcp-server/
+│   │   └── server.js                        # MCP protocol endpoint; any MCP-compatible AI connects here
 │   └── dfx.json
 ├── docker/
 │   ├── nginx/default.conf
@@ -253,7 +257,9 @@ OpenMemoryAgent/
 ├── LICENSE
 ├── CONTRIBUTING.md                          # contribution rules, including writing standard
 ├── VISION.md                                # research position: design decisions, what this proves, open questions
-└── DEVLOG.md                                # captain's log: what was discovered building it, entry by entry
+├── DEVLOG.md                                # captain's log: what was discovered building it, entry by entry
+├── RESEARCH.md                              # active research agenda: open scientific claims and what needs to be built to test them
+└── SCIENCE.md                               # plain-language explanations of the mathematics and biology behind the graph layer
 ```
 
 ---
@@ -274,6 +280,7 @@ OpenMemoryAgent/
 | IcpMemoryService | Fetches public memories from the adapter for injection into the LLM system prompt |
 | ICP adapter | Translates HTTP JSON from Laravel into Candid query calls; read-only in live mode |
 | ICP canister | Enforces msg.caller as record owner and serves JSON records over the HTTP gateway |
+| MCP server | Exposes public memories as MCP tools so any MCP-compatible AI can read the user's memory graph |
 | OpenRouter | Routes LLM calls to whichever model is set in OPENROUTER_MODEL |
 
 ---
