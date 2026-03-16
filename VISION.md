@@ -4,7 +4,7 @@
 
 This document is the research record for OpenMemoryAgent. It is not a setup guide (see README.md) and not a feature list. It captures the design questions driving the project, what was actually learned building it, what the implementation honestly proves, and where the hard problems remain.
 
-For the running implementation log — what was discovered building specific features, security findings, and what remains unresolved — see [DEVLOG.md](./DEVLOG.md). For the active research agenda — open scientific claims, what needs to be built to test each one, and how tracks evolve — see [RESEARCH.md](./RESEARCH.md). VISION.md is the stable research position; DEVLOG.md is the honest record of how it got there; RESEARCH.md is the living frontier.
+For the running implementation log (what was discovered building specific features, security findings, and what remains unresolved) see [DEVLOG.md](./DEVLOG.md). For the active research agenda (open scientific claims, what needs to be built to test each one, and how tracks evolve) see [RESEARCH.md](./RESEARCH.md). VISION.md is the stable research position; DEVLOG.md is the honest record of how it got there; RESEARCH.md is the living frontier.
 
 ---
 
@@ -32,7 +32,7 @@ The obvious first move is "just let the user own the database." That doesn't wor
 
 4. **Sensitivity is contextual.** Not all memory is equal. Your name is public. Your relationship status is personal. Your salary is sensitive. A binary public/private split loses nuance; treating everything as private makes the AI useless.
 
-5. **The user has to be involved.** If the system silently classifies and stores everything, the user has approved nothing — they've just trusted the server with a different label on it. Real agency requires the user to see and decide on at least the sensitive cases.
+5. **The user has to be involved.** If the system silently classifies and stores everything, the user has approved nothing; they have just trusted the server with a different label on it. Real agency requires the user to see and decide on at least the sensitive cases.
 
 These constraints define the design space this project is working in.
 
@@ -182,6 +182,22 @@ Initially, Private memories were auto-signed, with only Sensitive requiring appr
 
 ---
 
+## Prior Work and Positioning
+
+Four systems define the landscape that this project sits within. The distinctions below are architectural, not evaluative.
+
+**MemGPT** (Packer et al., 2023, arXiv:2310.08560) treats the LLM as an operating system managing a context window (RAM) and a flat external memory store (disk). A learned paging policy decides what to evict from context and what to retrieve. MemGPT's memory is flat: records are scored by similarity, not by a usage-weighted graph. Two records that have been retrieved together on a hundred occasions have the same retrieval weight as two records that have never been retrieved together. There is no mechanism by which retrieval patterns shape future retrieval. The ownership of the memory store is also conventional: MemGPT does not address where memory lives or who controls write access.
+
+**A-MEM** (Xu et al., 2025) implements the Zettelkasten method for AI agent memory: each memory note carries structured attributes and is linked to similar existing notes at write time. When new content is highly similar to an existing note, A-MEM updates the existing note rather than writing a duplicate. This is the correct architectural direction for memory evolution. The difference from this project is that A-MEM's links are static after creation. They reflect write-time similarity, not retrieval history. An edge that was never traversed has the same weight as one traversed a thousand times. A-MEM is closer to a well-organised database than to a conductance network.
+
+**GraphRAG** (Edge et al., 2024, arXiv:2404.16130) extracts entities and relationships from a document corpus and builds a knowledge graph for retrieval. Retrieval traverses the graph rather than scoring flat chunks. This is a meaningful improvement over flat RAG for document-dense tasks. GraphRAG's graph is static after construction: it reflects document semantic structure at build time and does not evolve through retrieval events. It is also built over a document corpus the operator provides, not over the agent's own conversation and memory history.
+
+**Kinic and zkTAM** (2025) demonstrated a zero-knowledge proof system that attests which specific memory records were used when generating a response, closing the observability gap that `active_node_ids` identifies but cannot prove. The zkTAM approach is referenced in the "What This Does Not Prove" section above as the intended next step after retrieval observability is established. OpenMemoryAgent's `active_node_ids` field is the precondition that zkTAM requires.
+
+**The combination this project builds.** Graph-structured memory where edge weights evolve through the agent's retrieval behavior; user-cryptographic ownership of source records enforced at the protocol level by `msg.caller` on an ICP canister; a standard MCP interface through which any compliant external agent connects; and trust-weighted collective Physarum dynamics across multiple agents with MemoryGraft resistance. No single paper in the literature identified during this project's research phase combines all four of these properties. The individual components each have precedents. Their combination is the contribution.
+
+---
+
 ## The Research Questions This Opens
 
 This project is one concrete implementation. The questions it surfaces are more interesting than the implementation itself.
@@ -300,7 +316,7 @@ The graph memory layer built in this project points toward a larger interface pa
 
 The obvious framing is the brain globe: a Three.js sphere where individual memory nodes float in space, lighting up as the AI reads them, edges wiring in as new memories form. That is a compelling demo. It is also the wrong tool for the actual problem.
 
-At a few hundred nodes the brain globe works well enough. At one hundred thousand nodes — after two or three days of continuous multi-agent operation — it is an unnavigable point cloud. No individual node is legible at that scale. Watching specific nodes light up tells you nothing useful about what the system is doing at the macro level, which is the level that matters when you are deciding whether to intervene. A visualization that cannot be used when the system is actually running at scale is not a visualization; it is a demo prop.
+At a few hundred nodes the brain globe works well enough. At one hundred thousand nodes, which two or three days of continuous multi-agent operation can produce, it is an unnavigable point cloud. No individual node is legible at that scale. Watching specific nodes light up tells you nothing useful about what the system is doing at the macro level, which is the level that matters when you are deciding whether to intervene. A visualization that cannot be used when the system is actually running at scale is not a visualization; it is a demo prop.
 
 The problem this interface needs to solve is different. When two or three agents have been running for 48 hours, generating thousands of memories, reinforcing edges across a shared graph, the operator needs answers to questions like: which knowledge clusters are actively hot right now and which have gone stale, are the agents converging on aligned memory paths or drifting into disconnected subgraphs, has a low-trust agent been reinforcing a cluster that the other agents depend on, and what was the graph's state twelve hours ago when the anomaly first appeared. Those are operational monitoring questions, not browsing questions.
 
@@ -318,7 +334,7 @@ The correct interface is a mission control surface, not a brain globe. The disti
 
 **Region-scale intervention controls.** The operator can act at the cluster level without touching individual nodes. Boosting a cluster's base weight tells the collective Physarum to treat that knowledge region as more traversable. Isolating an agent's subgraph suspends its contribution to shared edge weights without deleting its private graph. Pausing decay on a specific region keeps that knowledge available while the rest of the graph continues its natural attenuation. These controls act on the dynamics, not the data, which is the right abstraction for an operator who cannot read millions of individual memory records.
 
-**Multi-agent subgraph layout.** Each agent occupies a distinct spatial region in the Three.js scene. Shared nodes — those appearing in more than one agent's graph partition via the content hash join — are positioned at the boundaries between regions, with edge thickness proportional to the shared weight accumulated by collective reinforcement. The spatial layout makes the topology of collective memory legible: you can see at a glance how much knowledge is shared across agents versus siloed within individual partitions.
+**Multi-agent subgraph layout.** Each agent occupies a distinct spatial region in the Three.js scene. Shared nodes, meaning those appearing in more than one agent's graph partition via the content hash join, are positioned at the boundaries between regions, with edge thickness proportional to the shared weight accumulated by collective reinforcement. The spatial layout makes the topology of collective memory legible: you can see at a glance how much knowledge is shared across agents versus siloed within individual partitions.
 
 #### The file explorer comparison stated precisely
 
@@ -352,7 +368,7 @@ This is not an incremental extension of the single-user system. It changes the s
 
 **Cross-agent access grants on ICP.** The canister mediates which agents can read which nodes from another agent's graph. Agent A can grant Agent B read access to a specific node by signing a permission record on the canister. The bipartite access control model from Collaborative Memory (arXiv:2505.18279) provides the formal structure; ICP's msg.caller enforcement makes it cryptographic rather than application-level.
 
-**Mission control surface for collective cognitive state.** Each agent's subgraph occupies a distinct region of the Three.js scene. Nodes shared between agents — identified by content hash join — sit at the boundaries between regions, with edge thickness proportional to accumulated shared weight. The top-level view shows cluster heat maps, not individual nodes: a cluster that multiple agents have reinforced is visually hot; one in decay is cool. MemoryGraft anomalies, where a low-trust principal is driving high flux into an established cluster, appear as distinct-colored pulses tied to the contributing principal's trust score. The operator can inspect the graph's state at any past point via time scrubber, isolate an agent's subgraph contribution, or boost a cluster's base weight without touching individual nodes. See "The Larger Direction" section for the full cockpit specification.
+**Mission control surface for collective cognitive state.** Each agent's subgraph occupies a distinct region of the Three.js scene. Nodes shared between agents, identified by content hash join, sit at the boundaries between regions, with edge thickness proportional to accumulated shared weight. The top-level view shows cluster heat maps, not individual nodes: a cluster that multiple agents have reinforced is visually hot; one in decay is cool. MemoryGraft anomalies, where a low-trust principal is driving high flux into an established cluster, appear as distinct-colored pulses tied to the contributing principal's trust score. The operator can inspect the graph's state at any past point via time scrubber, isolate an agent's subgraph contribution, or boost a cluster's base weight without touching individual nodes. See "The Larger Direction" section for the full cockpit specification.
 
 #### What this does not yet implement
 
@@ -379,6 +395,36 @@ The alternative this project builds is a memory layer with a different ownership
 This changes the product question from "how do we make this AI remember better?" to "how do we make memory infrastructure that any AI can plug into?" The graph, the Physarum dynamics, the decay schedule, the trust weights, and the ICP ownership layer are all infrastructure components, not product features. The chat interface in this codebase is the reference implementation demonstrating that the infrastructure works. The MCP server at `icp/mcp-server/server.js` is the actual deliverable: the protocol endpoint through which any compliant AI gains access to your memory.
 
 What changes when you have this: the next AI you open already knows who you are, what you are working on, what you care about, and what you have learned. Not because you told it, but because it read your graph. And when it learns something new in conversation with you, it writes that back into the same graph, where every future AI you work with can read it. The memory compounds across AI systems rather than resetting at the boundary of each vendor's product.
+
+---
+
+## What Sovereignty Does and Does Not Guarantee
+
+The ICP canister model provides strong guarantees at one specific layer: the write authority problem and the private record access problem. No server, no agent, and no external AI can write a memory record under your identity without your private key. Private and sensitive records are gated by `msg.caller` at the canister level, not by application code that can be changed later. Those guarantees are cryptographic and hold regardless of what the application layer above the canister does.
+
+A reasonable question follows: would moving the entire server infrastructure onto ICP extend those guarantees to cover the graph layer and eliminate the remaining gaps? The answer is that it would close one specific gap but leave the deeper problem unchanged.
+
+**What moving the graph layer to ICP would fix.**
+
+The Physarum edge weights, node relationships, and cluster snapshots currently live in PostgreSQL on a server the user does not control. This creates a concrete gap: the raw memory records are cryptographically owned, but the relationship structure derived from those records is a server-side artifact. DEVLOG Entry 001 identified this as a known architectural tension before the multi-agent layer existed. Moving the graph into ICP stable memory would close it. The relationship structure would carry the same ownership guarantee as the raw records, the graph could persist beyond any particular server's continued operation, and the derived topology would be as auditable as the source content. That is worth building, and it is the most tractable infrastructure improvement on the sovereignty dimension.
+
+**What moving to ICP would not fix.**
+
+The deeper problem is not where the data is stored. It is what authorized readers do with data after they have been granted access. The canister enforces `msg.caller` for writes and for private reads. It cannot enforce what a compliant reader does with what it reads after access is granted. Whether the graph lives in PostgreSQL or ICP stable memory, a connected AI that has read access to your public nodes has that content and can forward it to a third party. Moving the storage layer does not constrain what authorized parties take out of it.
+
+This is the structural tension between portability and sovereignty. Making memory portable requires letting external AI systems read it. Letting them read it means they hold the content, and what they do with it afterward is outside the canister's enforcement boundary. The architecture solves storage sovereignty and write authority. It does not solve downstream use.
+
+**Three approaches that would actually address downstream use.**
+
+The first is capability tokens with scope and expiry. Rather than granting an AI permanent read access to the full public graph, the user issues a time-limited token scoped to a specific task or session. When the session ends, the token expires. This does not prevent exfiltration within the window, but it limits exposure to discrete authorized interactions rather than continuous open access.
+
+The second is selective disclosure at retrieval time. The MCP server already performs relevance retrieval rather than returning the full public graph on every request. Treating this as a deliberate privacy control rather than a performance optimization means the AI receives only the fragment of the graph assembled for the current context. The AI never sees the full corpus, only the slice that was relevant to this conversation. This reduces the surface area of possible exfiltration without eliminating it entirely.
+
+The third is verifiable computation via the zkTAM approach referenced elsewhere in this document. Zero-knowledge proofs that an AI used a specific set of memories when generating a specific response would allow auditing whether a connected AI confined its use of your memories to the stated purpose. The `active_node_ids` field already provides the precondition. The proof infrastructure does not yet exist at production scale, but the path is architecturally clear.
+
+**The honest boundary of what this system guarantees.**
+
+The ICP canister guarantees that no unauthorized party wrote your memory records and that no unauthorized party can read your private records. It does not guarantee that authorized readers confine their use of public records to the purposes you intended. The graph layer and the MCP server operate within that boundary: they access public content that was already classified as shareable at the time it was stored. Moving all infrastructure to ICP would strengthen the storage sovereignty claim and close the graph structure gap. It would not move the boundary itself. The design question for anyone building on this architecture is not whether to accept that boundary but how to narrow it over time through capability tokens, selective disclosure, and eventually verifiable computation.
 
 ---
 
@@ -415,6 +461,28 @@ At thirty years, the raw graph is not the thing you access directly. A decade of
 This changes the design requirement for memory consolidation. If the graph needs to be legible in thirty years, the consolidation process cannot just prune dead edges. It must produce semantic nodes: higher-order abstractions that replace dense clusters of episodic memories with a single consolidated node that carries the essential meaning of the cluster. This is how biological memory works. Episodic memory (the specific conversation, the exact code, the precise problem) decays relatively quickly. Semantic memory (the principle learned from many such conversations) persists. The consolidation process is the mechanism that converts episodic into semantic, and it needs to run regularly on any memory graph intended to remain useful over years rather than weeks.
 
 The thirty-year framing also clarifies what "memory ownership" actually means. Ownership of a database record is a legal category. Ownership of a signed ICP canister is a cryptographic one: you can prove, to anyone, that no one modified your memory history without your private key. If you access your graph in 2056, you can verify that the entries were written by your key and have not been altered since. That provenance guarantee is not available from any vendor-controlled memory system, regardless of their privacy policy language. It is a property of the cryptographic architecture.
+
+---
+
+## Known Limitations and Open Measurements
+
+The following are not future work items. They are properties of the current implementation that an evaluator should know before treating any claim in this document as proven.
+
+**The discrete Physarum approximation is not formally verified against the continuous model.** SCIENCE.md section 10 explains the mapping from the Tero et al. (2010) ODE to the discrete ALPHA/RHO/FLOOR constants. The continuous model produces a coupled pressure-equilibration system where all edge conductances evolve simultaneously. The discrete model updates each edge independently. Whether the two systems converge to the same topological class under equivalent conditions is an open question. Track 1 in RESEARCH.md defines the experiment that would test this.
+
+**ALPHA and RHO were chosen by inspection, not empirically calibrated.** The constants were selected based on the intended behavioral properties described in SCIENCE.md section 10: a ten-activation reinforcement horizon and a 99-day decay span. They have not been tuned against a retrieval quality benchmark. A different choice of constants might produce a better or worse relevance index, and there is currently no measurement that would detect the difference.
+
+**The scale-free topological claim is unmeasured.** SCIENCE.md sections 7 and 10, and Track 1 in RESEARCH.md, all reference the claim that Physarum dynamics on a memory graph produce a scale-free degree distribution with gamma in [2,3]. This has not been measured on a graph produced by this system. The `GET /api/graph/topology` endpoint implements the degree distribution computation and power-law fit. The result of running that endpoint on a real memory graph is the finding; the claim is a hypothesis until that result exists.
+
+**No A/B experiment confirms that injected memory improves response quality.** The system retrieves a Physarum neighbourhood and injects it into the LLM context window on each turn. The `active_node_ids` field in the response identifies exactly what was injected. What has not been measured is whether responses with memory present are meaningfully better than responses with an empty context. Track 5 Layer 2 in RESEARCH.md defines this experiment. Without that measurement, the retrieval pipeline might be adding latency and complexity with no detectable benefit.
+
+**Physarum weights track access frequency, not causal influence.** When the LLM generates a response with memory records in context, those records' edges receive reinforcement regardless of whether the model attended to them. A record present at token position 40,000 in a long context receives the same weight increment as one the model demonstrably used. The attention distribution over the context window is not observable through any current LLM provider API. The edge weights are therefore a signal of retrieval co-occurrence, not a signal of reasoning relevance. The distinction matters for anyone interpreting high-weight edges as evidence of conceptual importance.
+
+**The graph layer carries no cryptographic ownership.** Memory records in the ICP canister are owned by the user's Ed25519 principal. The graph nodes and edge weights derived from those records live in PostgreSQL on a server the user does not control. The relationship structure could be altered without the user's knowledge. The ICP ownership guarantee covers the source records; it does not extend to the derived topology. A graph ownership registry on ICP (signed fingerprints per graph state) is the correct fix, described under the ICP-PostgreSQL division of labour section.
+
+**localStorage key custody is vulnerable to script injection.** The Ed25519 private key is generated in the browser and persisted to localStorage. Any same-origin JavaScript can read localStorage. A script injection attack could exfiltrate the key. The server never holds the key, which prevents server-side forgery. Replacing localStorage with WebAuthn or a hardware key would close the client-side vulnerability. Internet Identity on ICP provides a ready implementation of this upgrade.
+
+**LLM classification is non-deterministic and uncorrectable.** The Public/Private/Sensitive classification is produced by an LLM call on each extracted memory. The same content submitted twice may receive different classifications. A misclassified memory has no correction path in the current implementation; it remains at its original classification until deleted. Any deployment treating this classification as a security boundary rather than a best-effort filter should validate classification accuracy on a held-out sample before relying on it.
 
 ---
 

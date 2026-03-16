@@ -18,6 +18,92 @@ The log is append-only. Entries are not edited after the fact.
 
 ---
 
+## Entry 017 - 2026-03-15
+### An expert-level audit identifies eight gaps; all three tiers are addressed in one session
+
+#### What the audit found
+
+A systematic review of the project against the standards an expert reviewer would apply produced eight distinct gaps organized into three tiers. Tier 1 covered scientific credibility failures that would block a serious review: the Watts-Strogatz citation was informal rather than bibliographic, the MemoryGraft citation had no authors, the ALPHA and RHO constants had no derivation or justification, and the scale-free topological claim was entirely unmeasured. Tier 2 covered missing literature: the storage trigger had no grounding in cognitive psychology, MemGPT and A-MEM were discussed only in the development log rather than in the research documents, and MCP and ICP had no formal protocol references. Tier 3 covered methodology gaps: no known-limitations section existed, and the related work positioning was absent from all documents.
+
+#### What was changed and why
+
+**SCIENCE.md** received four additions. Section 6 (MemoryGraft) now has a corrected citation note with the arXiv identifier and an explicit statement that author names should be verified at arxiv.org before citing in formal work, because the preprint postdates the primary drafting period. Section 7 (scale-free networks) now has the full Watts-Strogatz (1998) bibliographic citation with journal, volume, pages, and doi. A new section 10 explains the mapping from the Tero et al. (2010) continuous ODE to the discrete ALPHA, RHO, and FLOOR constants: ALPHA was chosen to imply a ten-activation reinforcement horizon, RHO to produce a 99-day decay span matching the rough empirical horizon for human memory traces without rehearsal, and FLOOR to prevent complete disconnection while allowing re-reinforcement of dormant paths. The section also states explicitly what the approximation does not preserve: the continuous model's global pressure equilibration where all edges evolve simultaneously. A new section 11 provides full citations and a two-paragraph architectural comparison for MemGPT (Packer et al., 2023, arXiv:2310.08560), A-MEM (Xu et al., 2025), and GraphRAG (Edge et al., 2024, arXiv:2404.16130), identifying in each case the specific architectural property this project has that the prior system does not: edge weights that evolve through retrieval history rather than being set at write time or staying static.
+
+Section 7 also received a new subsection explaining how to run the topology measurement and how to interpret the gamma, R-squared, and clustering coefficient values the endpoint returns. The interpretation guidance follows the convention in the Barabasi-Albert literature for distinguishing power-law from exponential and Poisson distributions.
+
+**VISION.md** received two new sections. "Known Limitations and Open Measurements" states eight properties of the current implementation that an evaluator should know: the discrete Physarum approximation is not formally verified against the continuous model, ALPHA and RHO were chosen by inspection rather than calibrated empirically, the scale-free claim is a hypothesis not a measurement, no A/B experiment confirms retrieval quality improvement, Physarum weights track access frequency not causal influence, the graph layer carries no cryptographic ownership, localStorage key custody is vulnerable to script injection, and LLM classification is non-deterministic and uncorrectable. Stating these is not hedging. It is the standard practice in systems research: known limitations precisely stated are evidence of rigorous self-evaluation, not weakness. "Prior Work and Positioning" places the project relative to MemGPT, A-MEM, GraphRAG, and Kinic's zkTAM work, with a summary of the architectural combination that none of the prior systems individually implement.
+
+**RESEARCH.md** received two citation additions. Track 6 (the storage trigger) now references Craik and Lockhart (1972) "Levels of Processing" (Journal of Verbal Learning and Verbal Behavior, 11(6), 671-684, doi:10.1016/S0022-5371(72)80001-X) and Tulving (1983) "Elements of Episodic Memory" as the cognitive psychology grounding for the four memorability criteria. The criteria (novelty, significance, durability, connection richness) map to depth-of-processing dimensions and encoding specificity respectively. Track 9 (cognitive subsystem) now references ACT-R (Anderson et al., 2004, Psychological Review, 111(4), 1036-1060, doi:10.1037/0033-295X.111.4.1036), Soar (Laird, Newell and Rosenbloom, 1987, Artificial Intelligence, 33(1), 1-64, doi:10.1016/0004-3702(87)90050-6), and Global Workspace Theory (Baars, 1988, Cambridge University Press), placing OpenMemoryAgent in relation to forty years of cognitive architecture research. Track 1 status was updated to reflect that the degree distribution endpoint is now implemented.
+
+#### The topology endpoint: Track 1 moves from open to measurable
+
+The largest single gap identified in the audit was that the scale-free topological claim had never been measured. SCIENCE.md, VISION.md, and the Three.js visualization all referenced Physarum dynamics producing scale-free structure, but no code computed whether this was actually true.
+
+`GraphController::topology()` now exists at `GET /api/graph/topology`. It computes the degree distribution of the current user's graph, fits a power law by ordinary least squares on log(P(k)) vs log(k) for k >= 1, returns gamma and R-squared, and applies the Watts-Strogatz (1998) formula for mean local clustering coefficient. The `is_scale_free` flag is true when gamma is in [2, 3] and R-squared is at or above 0.80. The route is registered at `api.graph.topology`.
+
+What this changes: the gap between claim and evidence. Before this entry, the project stated scale-free topology and had no measurement. After, the measurement exists and can be run against any populated graph. Whether the result confirms or disconfirms the hypothesis is a finding; the prior state of untested assertion was not.
+
+Track 1 in RESEARCH.md now reads "endpoint implemented, measurement pending." The measurement should be recorded here and in Track 1 as a separate entry once a real memory graph is available to run it against.
+
+#### What the audit revealed about documentation maintenance
+
+The eight gaps identified by the audit had accumulated over approximately three to four weeks of active development. The pattern: documentation written to match the ideas at the time of writing, with implementation details added later that were not reflected in the research documents, and citations that were informal in the development log and never formalized in SCIENCE.md. The fix required approximately four hours of documentation work and one hour of implementation.
+
+The implication for ongoing work: a lightweight audit against this same checklist (formal citations for every referenced paper, parameters justified not just stated, claims labeled as measured vs. hypothesized, a limitations section updated after each new feature) catches most drift before it accumulates into a multi-session cleanup. Running that audit before closing each major track is the correct maintenance interval.
+
+---
+
+## Entry 016 - 2026-03-14
+### The sovereignty boundary is drawn precisely, and the question of moving server infrastructure to ICP is examined
+
+#### The question that opened this
+
+After establishing the portable sovereign memory framing in Entry 014, a follow-on question surfaced: if the purpose of the ICP canister is to give users genuine ownership of their memory, does building a large shared memory network defeat that purpose? And separately: could the entire server infrastructure move to ICP, and would that close the remaining sovereignty gaps?
+
+Both questions required tracing what the current architecture actually guarantees versus what it only appears to guarantee.
+
+#### What sovereignty means here, stated precisely
+
+The ICP canister gives the user write authority and private read authority, enforced cryptographically by `msg.caller`. No server, no database administrator, and no third party can create or modify records under the user's principal. No server can read private or sensitive records on the user's behalf. These are not policy claims. They are enforcement claims backed by the canister code.
+
+The memory graph layer in PostgreSQL does not have this property. Edge weights, which encode the Physarum reinforcement history across a lifetime of memory use, live in a server-controlled database. A server operator could alter those weights, and the user would have no way to detect the change from outside the system. The graph structure is therefore trustworthy only to the extent that the server operator is trustworthy. That is a significant gap.
+
+The shared memory network question is the same gap stated from a different angle. Shared edges in the multi-agent graph live in the same PostgreSQL layer. When multiple agents contribute to a collective graph, the weights encoding their collective Physarum history are not user-controlled. The sovereignty model that applies to individual memory records does not extend to the collective graph.
+
+#### What moving the graph to ICP would fix
+
+Moving `memory_nodes`, `memory_edges`, and `shared_memory_edges` to ICP canister stable memory would extend write authority and auditable reads to the graph layer. Edge weight updates would become canister calls signed by the owner or an authorized agent, logged on-chain, and verifiable by any observer with read access. The Physarum dynamics would run as canister-hosted computation rather than as server code the user cannot inspect. This closes the storage sovereignty gap for the graph.
+
+It does not close the graph layer entirely. Cluster detection and graph snapshot generation involve iterating over large node and edge sets. These operations are computationally expensive and run against PostgreSQL's query planner for good reason. Running weighted label propagation inside a canister is feasible but would require restructuring the algorithm for WASM execution and managing the cycle cost of iteration. The path exists; it is not trivial.
+
+#### What moving the graph to ICP would not fix
+
+Moving storage does not address the downstream use problem. A public memory record, or a public graph node, can be read by any authorized caller: the server adapter, the MCP server, any AI system the user has connected. Once an authorized reader receives that content, what happens next is outside the canister's enforcement reach. The reader may log it, cache it, use it to train another model, or share it with a third party. None of those actions require touching the canister again.
+
+This is not a flaw specific to ICP. It is a property of any access-control model based on read permission rather than read enforcement. File system permissions grant read access; they cannot prevent the reader from copying the file afterward.
+
+Three directions exist for addressing downstream use. Capability tokens with embedded expiry and purpose restrictions would allow the canister to issue time-bounded read credentials that could be verified by compliant downstream systems, without relying on those systems to self-report their behavior. Selective disclosure at retrieval time would allow the owner to specify what portion of the graph a given reader may see per query, limiting exposure per call rather than per relationship. Zero-knowledge verified computation (zkTAM) would allow a reader to prove that they used a memory record for a specific computation without revealing the record itself to a third party; this is the most principled answer but requires substantial cryptographic infrastructure.
+
+All three are research directions rather than available components. None of them are built into the current system.
+
+#### Could the server infrastructure itself move to ICP?
+
+The question was asked directly: could the Laravel backend, the LLM call routing, and the chat controller all run as ICP canisters?
+
+The honest answer is: not yet, not without fundamental changes to the approach. ICP canisters execute as WASM modules within the ICP runtime. PHP and Node.js do not compile to WASM in a form the ICP runtime accepts. Rewriting the backend in Rust or Motoko for canister deployment is technically possible, but it is a complete rewrite rather than a migration.
+
+More importantly, it would not solve the problem it appears to solve. The sovereignty gaps in the current architecture are in the graph layer (PostgreSQL) and in downstream use (authorized readers). Moving the request router and the LLM call handler onto ICP would make those components auditable, but LLM inference is not happening on ICP. The OpenRouter calls go to external provider endpoints. The content of LLM responses is processed by a system the user does not control regardless of where the routing code runs.
+
+The correct read of the infrastructure is that ICP is doing exactly the job it is suited for: providing an ownership-enforced, censorship-resistant record store for user-owned data. The application layer remains off-chain because that is where application logic, LLM routing, and iterative computation belong. The boundary between on-chain and off-chain is not arbitrary. It is drawn at the point where ownership guarantees are worth the cost of on-chain execution.
+
+#### What this resolved
+
+The sovereignty model for OpenMemoryAgent can now be stated without hedging. ICP guarantees write authority (no server can write under the user's principal) and private read authority (private and sensitive records are gated by `msg.caller` regardless of application code). It does not guarantee that authorized readers of public records use that content in ways the user would approve. That gap is real, documented, and has three research directions pointing at it. The project is honest about the boundary rather than claiming guarantees it does not have.
+
+The VISION.md section "What Sovereignty Does and Does Not Guarantee" captures the stable version of these findings. This entry is the working record of how those conclusions were reached.
+
+---
+
 ## Entry 015 - 2026-03-14
 ### The 3D surface becomes a live cortex visualization, and the cognitive architecture framing opens
 

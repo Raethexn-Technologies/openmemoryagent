@@ -15,8 +15,7 @@ executable proofs of each formula described here.
 Adaptive Network Design." *Science* 327, 439-442.
 doi:10.1126/science.1177894
 
-**What it is.** Physarum polycephalum is a single-celled organism — a slime
-mold — that can spread across surfaces in search of food. When researchers
+**What it is.** Physarum polycephalum is a single-celled slime mold that can spread across surfaces in search of food. When researchers
 placed oat flakes at positions matching Tokyo's train stations and let the
 organism grow, it produced a network of tubes connecting the food sources. The
 resulting network closely matched the actual Tokyo rail system in both
@@ -86,9 +85,7 @@ formula. The constants ALPHA, RHO, and WEIGHT_FLOOR are defined in
 Neuropsychological Theory.* Wiley. Chapter 4.
 
 **What it is.** Donald Hebb proposed in 1949 that synaptic connections
-strengthen when two neurons activate at the same time. The informal summary —
-"neurons that fire together wire together" — captures the mechanism: repeated
-co-activation produces a structural change in the connection between cells.
+strengthen when two neurons activate at the same time. The informal statement "neurons that fire together wire together" captures the mechanism: repeated co-activation produces a structural change in the connection between cells.
 This is now understood as a mechanism for memory formation in the brain.
 
 **How this applies here.** Each pair of memory nodes is connected by an edge.
@@ -231,9 +228,7 @@ calls `detect()` twice on the same graph and asserts identical output.
 
 ## 6. MemoryGraft resistance: trust-weighted collective reinforcement
 
-**The source.** MemoryGraft attack vector described in: (2024).
-"MemoryGraft: Poisoning Long-Term Memory in Autonomous AI Agents."
-arXiv:2512.16962.
+**The source.** MemoryGraft attack vector described in: "MemoryGraft: Poisoning Long-Term Memory in Autonomous AI Agents." arXiv:2512.16962. Note: the submission identifier 2512 corresponds to December 2025. Authors are not reproduced here because the preprint postdates this document's primary drafting period; verify the current author list at arxiv.org/abs/2512.16962 before citing in formal work.
 
 **What the attack is.** When multiple agents share a memory graph, a
 malicious agent can shift the collective graph toward content it wants the
@@ -288,13 +283,39 @@ memory graph organised by Physarum dynamics also produces a power-law degree
 distribution, it belongs to the same topological class as the systems that
 inspired it. RESEARCH.md Track 1 describes the experiment that will test this.
 
-**Small-world networks.** A related property defined by Watts and Strogatz
-(1998): high clustering coefficient (nodes in the same community connect to
-each other densely) combined with short average path length between any two
-nodes. The human brain exhibits small-world structure. So does the Tokyo rail
+**Small-world networks.** A related property defined in Watts, D.J. and Strogatz, S.H. (1998). "Collective dynamics of 'small-world' networks." *Nature* 393, 440-442. doi:10.1038/30918: high clustering coefficient (nodes in the same community connect to each other densely) combined with short average path length between any two nodes. The human brain exhibits small-world structure. So does the Tokyo rail
 network that Physarum reconstructed. If the memory graph does too, the analogy
 between cosmic structure, neural structure, and AI memory structure is
 mathematically grounded, not decorative.
+
+**Measuring the topology.** The `GET /api/graph/topology` endpoint computes
+both properties for the current user's graph. It returns the full degree
+distribution histogram, the fitted gamma exponent and R-squared from log-log
+regression on P(k) vs k, a boolean `is_scale_free` flag, and the mean local
+clustering coefficient. The criterion for scale-free classification is gamma
+in [2, 3] with R-squared at or above 0.80. This follows the standard
+convention in the Barabasi-Albert literature for distinguishing power-law
+distributions from exponential or Poisson alternatives.
+
+To produce a meaningful measurement, first run `php artisan simulate:day` to
+populate the graph with realistic structure, then call the endpoint:
+
+```bash
+curl http://localhost:8000/api/graph/topology
+```
+
+The response should be interpreted as follows. A gamma value below 2.0
+suggests the graph is growing toward scale-free topology but has not yet
+reached the power-law regime, which is expected for small graphs of fewer
+than 100 nodes. A gamma above 3.0 suggests the degree distribution is more
+homogeneous than a true power-law, which would indicate that the auto-wiring
+rules are not producing sufficient preferential attachment. A high mean
+clustering coefficient (above 0.3) alongside a gamma in [2, 3] would confirm
+small-world structure in the Watts-Strogatz sense. The current implementation
+does not compute mean shortest path length because doing so requires an
+all-pairs shortest path computation that is prohibitively expensive for graphs
+above a few thousand nodes; the clustering coefficient alone is the accessible
+proxy.
 
 ---
 
@@ -333,6 +354,44 @@ arithmetic in the docblock to check the expected value by hand. If any test
 fails after changing a constant (ALPHA, RHO, FLOOR, or SHARED_ALPHA), the
 failure message will tell you which table or formula in this document needs to
 be updated.
+
+---
+
+---
+
+## 10. Why these constants: mapping from continuous to discrete Physarum
+
+**The source formula.** The Tero et al. (2010) continuous Physarum model updates conductance at each time step using:
+
+```
+D_ij(t + dt) = ( |Q_ij(t)| / (L_ij * mu) ) * D_ij(t)
+```
+
+Where `mu` is a decay coefficient with units of inverse time and `Q_ij / (L_ij * mu)` is a dimensionless flux ratio. When this ratio exceeds 1, conductance grows. When it falls below 1, conductance shrinks. The model is self-stabilizing: high-flux tubes grow until the pressure equilibrium reduces their relative advantage; low-flux tubes thin until they carry no meaningful flow.
+
+**The discrete approximation.** This project replaces the continuous ODE with a two-operation discrete rule because the physical quantities in the Tero model (tube length, osmotic pressure, flow viscosity) have no direct analog in a memory graph. A memory edge has no physical length and no fluid pressure. What it does have is a co-activation signal (two nodes loaded together count as one activation event) and a temporal gap between activations (turns are discrete, not continuous).
+
+The discrete rule maps these signals to weight updates:
+
+- ALPHA = 0.10: a single co-activation increments weight by 10% of the maximum. This implies a minimum of ten co-activations to reach full weight from the floor, which calibrates to a typical reinforcement horizon of days to weeks for any specific memory pair.
+- RHO = 0.97: daily multiplicative decay of 3%. This choice produces a floor-to-ceiling span of 99 days for a fully reinforced edge (see the decay table in section 3), which corresponds to the rough empirical horizon over which human memory traces decay without rehearsal. The value is not derived from the Tero model but from the intended behavioral property: edges used weekly should remain above floor weight; edges not accessed for a quarter should not.
+- FLOOR = 0.05: a minimum conductance that prevents edges from being algorithmically removed. In the biological model, Physarum tubes thin but do not immediately rupture. In this model, a floor prevents complete disconnection and maintains a weak signal that allows re-reinforcement to recover a dormant path.
+
+**What the approximation does not preserve.** The continuous Tero model is a coupled ODE system: all tube conductances evolve simultaneously as the pressure distribution changes. The discrete approximation treats each edge independently. This means the discrete rule does not exhibit the same global pressure equilibration that drives the biological network toward minimum Steiner tree configurations. The discrete model converges to a stable weight distribution through repeated access events, but the topology it produces under that process has not been formally verified against the predictions of the continuous model. Track 1 in RESEARCH.md is the experiment that determines what topology actually emerges. The parameter choices above are reasoned rather than derived; empirical calibration against user data is deferred to that track.
+
+---
+
+## 11. Related systems: MemGPT, A-MEM, and GraphRAG
+
+Three systems address problems adjacent to this one. Understanding where they differ clarifies what this project contributes.
+
+**MemGPT.** Packer et al. (2023). "MemGPT: Towards LLMs as Operating Systems." arXiv:2310.08560. MemGPT treats the LLM as an operating system managing a memory hierarchy with a main context window (analogous to RAM) and an external storage layer (analogous to disk). When the context fills, MemGPT pages content to and from the disk store. The system learns what to page through a fine-tuned paging policy. The key difference from this project: MemGPT's disk is flat. Retrieval is similarity-scored against individual records, not graph-traversal across weighted edges. There is no conductance model, no edge decay, and no accumulated relevance signal derived from usage patterns. A memory record in MemGPT does not become more retrievable because the LLM found it useful alongside another specific record on twenty separate occasions. The Physarum dynamics here produce exactly that structure.
+
+**A-MEM.** Xu et al. (2025). "A-MEM: Agentic Memory for LLM Agents." Implements the Zettelkasten method for AI memory: each memory note has structured attributes (keywords, contextual descriptions, links to existing notes) and is linked to semantically similar existing memories at write time. When a new memory is highly similar to an existing one, A-MEM updates the existing note rather than appending a new record. The key difference from this project: A-MEM's links are established at write time by similarity and are static thereafter. They do not evolve based on retrieval patterns. An edge between two A-MEM notes has the same weight whether the agent traversed it once or a thousand times. The Physarum conductance model here produces a fundamentally different kind of link: one whose weight reflects the accumulation of actual retrieval events rather than write-time similarity.
+
+**GraphRAG.** Edge et al. (2024). "From Local to Global: A Graph RAG Approach to Query-Focused Summarization." arXiv:2404.16130. Microsoft Research's GraphRAG extracts entities and relationships from a document corpus and builds a knowledge graph for retrieval. Retrieval traverses the graph structure rather than scoring individual chunks. The key difference from this project: GraphRAG's graph is static after construction. It is built once from a document corpus and queried. There is no reinforcement mechanism, no decay, and no concept of edges becoming stronger or weaker through use. The graph topology reflects document structure, not agent cognition history. GraphRAG is a better document retrieval tool than flat RAG. This project is building a different thing: a memory substrate that evolves to reflect the agent's usage history, not the document's semantic structure.
+
+The combination that no existing system implements is: graph-structured storage where edge weights evolve continuously through the agent's actual retrieval behavior, with user-cryptographic ownership at the record level, and a standard protocol interface through which any compliant external agent can connect. That combination is what this project is building toward.
 
 ---
 

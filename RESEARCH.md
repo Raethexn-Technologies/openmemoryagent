@@ -1,4 +1,4 @@
-# OpenMemoryAgent — Research Agenda
+# OpenMemoryAgent: Research Agenda
 
 This document is the active research agenda for OpenMemoryAgent. It sits between VISION.md and DEVLOG.md in purpose: VISION.md holds stable design positions, DEVLOG.md holds timestamped discovery records, and this file holds the open questions and the work required to answer them.
 
@@ -24,7 +24,7 @@ If yes, this is a three-way convergence across physics, biology, and AI memory: 
 
 ### What needs to be built
 
-**Degree distribution endpoint.** `GET /api/graph/topology` computes the degree distribution of the current user's memory graph and fits a power law. The fit quality (R-squared against a log-log plot) determines whether the graph is scale-free. Run this against individual agent partitions and the collective graph to compare.
+**Degree distribution endpoint.** `GET /api/graph/topology` computes the degree distribution of the current user's memory graph and fits a power law using ordinary least squares regression on log(P(k)) vs log(k) for k >= 1. The endpoint returns the fitted exponent gamma, the R-squared of the fit, a boolean `is_scale_free` flag (true when gamma is in [2,3] and R-squared is at or above 0.80), and the mean local clustering coefficient computed by the Watts and Strogatz (1998) formula. This endpoint is implemented in `GraphController::topology()`. Run it after `php artisan simulate:day` to obtain an initial measurement. The fit quality determines whether the graph is scale-free. Run this against individual agent partitions and the collective graph to compare.
 
 **Small-world metrics endpoint.** The same endpoint or a companion computes mean clustering coefficient and mean shortest path length, then compares both against a random Erdos-Renyi graph of the same node count and edge density. A graph is small-world if clustering is significantly higher and path length is comparable to the random baseline.
 
@@ -36,7 +36,7 @@ If yes, this is a three-way convergence across physics, biology, and AI memory: 
 
 That AI memory organized by Physarum dynamics self-organizes into the same topological class as neural networks and cosmic structure, or that it does not. Either result is a finding. If it does, the galaxy visualization is scientifically accurate, not decorative. If it does not, the divergence tells you something about how Physarum dynamics on discrete memory graphs differs from the continuous physical systems they are modeled on.
 
-**Status: open**
+**Status: endpoint implemented, measurement pending.** `GET /api/graph/topology` is live. The scale-free claim moves from asserted to measurable by running the endpoint against a populated graph. The finding should be recorded as a DEVLOG entry and this status updated accordingly.
 
 ---
 
@@ -170,6 +170,8 @@ The order of work follows from this: build the measurement first, then build the
 
 The observation that storing every turn summary produces noise and that storing only what the user explicitly flags misses the most valuable memories. Neither extreme produces a useful long-term memory graph. The system needs a judgment step that runs before the summarization pipeline and decides whether a given conversation turn is worth remembering at all, and what form that memory should take.
 
+The cognitive psychology literature on encoding and memorability provides the theoretical grounding for this judgment. Craik and Lockhart (1972) established that the durability of a memory trace is determined by the depth at which information is processed, not merely by repetition or recency (Craik, F.I.M. and Lockhart, R.S. (1972). "Levels of processing: A framework for memory research." *Journal of Verbal Learning and Verbal Behavior*, 11(6), 671-684. doi:10.1016/S0022-5371(72)80001-X). Information processed for its meaning, its relationships to prior knowledge, and its relevance to ongoing goals produces more durable traces than information processed only for surface features. The four memorability criteria in this track (novelty, significance, durability, connection richness) map to depth-of-processing dimensions: novelty reflects distinctiveness from existing traces, significance reflects elaborative encoding tied to goals, durability reflects transfer-appropriate processing, and connection richness reflects relational encoding to prior knowledge. Tulving's encoding specificity principle (Tulving, E. (1983). *Elements of Episodic Memory*. Oxford University Press) adds a further constraint: a memory is retrievable only when the retrieval context shares features with the encoding context. For an AI memory system, this means storing memories with the contextual features that will be present when they are needed, not just the content itself.
+
 ### What needs to be built
 
 **Memorability classifier.** Before any memory is written to the graph, the LLM evaluates the candidate content against four criteria: novelty (not already well-represented in the graph), significance (the user engaged with this deeply or stated its importance), durability (likely to be relevant across future contexts), and connection richness (links meaningfully to existing high-weight nodes). The classifier returns one of three decisions: store as a new node, update an existing node with new information, or skip. This runs as a structured prompt call before the summarization step.
@@ -249,6 +251,8 @@ That the technical, structural, and semantic components of a thirty-year memory 
 ### What opened this track
 
 The observation that the three-component model of cognition (perception, reasoning, memory) maps directly onto the current architecture, and that OpenMemoryAgent occupies the memory position with a well-defined protocol interface (MCP) that any reasoning layer can connect to. If the memory layer is infrastructure rather than a product feature, the question becomes whether a modular cognitive architecture built on sovereign memory infrastructure performs differently from a single-model system on tasks that require long-horizon context, multi-domain synthesis, or explicit knowledge handoff between specialized components.
+
+The cognitive architecture tradition provides the conceptual precedent. ACT-R (Anderson, J.R., Bothell, D., Byrne, M.D., Douglass, S., Lebiere, C. and Qin, Y. (2004). "An Integrated Theory of the Mind." *Psychological Review*, 111(4), 1036-1060. doi:10.1037/0033-295X.111.4.1036) formalizes memory retrieval as an activation equation where each memory chunk's base-level activation decays with time since last access and recovers with frequency of access, the same behavioral property the Physarum RHO decay and ALPHA reinforcement implement. Soar (Laird, J.E., Newell, A. and Rosenbloom, P.S. (1987). "Soar: An Architecture for General Intelligence." *Artificial Intelligence*, 33(1), 1-64. doi:10.1016/0004-3702(87)90050-6) demonstrated that separating working memory (the reasoning context) from long-term memory (persistent knowledge) with a defined retrieval interface produces a system with human-like performance across a wider range of tasks than any single-memory architecture. Global Workspace Theory (Baars, B.J. (1988). *A Cognitive Theory of Consciousness*. Cambridge University Press) provides the complementary framing: a global workspace accessible to many specialized processes, with attention as the mechanism that selects which content enters the workspace, maps onto the retrieval step that determines which memory nodes enter the LLM context window on each turn. OpenMemoryAgent does not implement any of these architectures. It builds a memory infrastructure on which they could be implemented, with the specific advantage that the memory substrate is cryptographically owned, protocol-accessible, and graph-structured with usage-derived edge weights rather than flat and vendor-controlled.
 
 ### What needs to be built
 
