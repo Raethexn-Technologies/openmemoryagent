@@ -7,6 +7,7 @@ use App\Models\MemoryNode;
 use App\Services\GraphExtractionService;
 use App\Services\IcpMemoryService;
 use App\Services\LLM\LlmService;
+use App\Services\MemorabilityService;
 use App\Services\MemorySummarizationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
@@ -260,6 +261,16 @@ class ChatMemoryGraphTest extends TestCase
         $llm->shouldReceive('chat')->once()->andReturn('assistant reply');
         $llm->shouldReceive('provider')->andReturn('test-provider');
         $this->app->instance(LlmService::class, $llm);
+
+        // MemorabilityService runs before MemorySummarizationService in the pipeline.
+        // Tests that verify the summarizer and graph sync must mock it explicitly so
+        // the pipeline reaches the summarization step.
+        $memorability = Mockery::mock(MemorabilityService::class);
+        $memorability->shouldReceive('evaluate')->once()->andReturn([
+            'decision' => 'store_new',
+            'node_id'  => null,
+        ]);
+        $this->app->instance(MemorabilityService::class, $memorability);
     }
 
     private function bindUnusedControllerDependencies(): void
@@ -271,6 +282,10 @@ class ChatMemoryGraphTest extends TestCase
         $icp = Mockery::mock(IcpMemoryService::class);
         $icp->shouldIgnoreMissing();
         $this->app->instance(IcpMemoryService::class, $icp);
+
+        $memorability = Mockery::mock(MemorabilityService::class);
+        $memorability->shouldIgnoreMissing();
+        $this->app->instance(MemorabilityService::class, $memorability);
 
         $summarizer = Mockery::mock(MemorySummarizationService::class);
         $summarizer->shouldIgnoreMissing();
