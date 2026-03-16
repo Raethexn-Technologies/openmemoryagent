@@ -22,7 +22,7 @@ class AppServiceProvider extends ServiceProvider
                 apiKey: config('services.llm.openrouter_api_key') ?? '',
                 model: config('services.llm.openrouter_model', 'anthropic/claude-sonnet-4.5'),
                 siteUrl: config('services.llm.openrouter_site_url', ''),
-                siteName: config('services.llm.openrouter_site_name', 'OpenMemoryAgent'),
+                siteName: config('services.llm.openrouter_site_name', 'OpenMemory'),
             );
         });
 

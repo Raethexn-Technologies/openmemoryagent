@@ -38,7 +38,7 @@ use RuntimeException;
  *   OPENROUTER_API_KEY=sk-or-...        (get from https://openrouter.ai/keys)
  *   OPENROUTER_MODEL=anthropic/claude-sonnet-4.5   (optional, default shown)
  *   OPENROUTER_SITE_URL=https://your-app.com       (optional, improves OR dashboard tracking)
- *   OPENROUTER_SITE_NAME=OpenMemoryAgent           (optional)
+ *   OPENROUTER_SITE_NAME=OpenMemory           (optional)
  */
 class OpenRouterProvider implements LlmProviderInterface
 {
@@ -49,7 +49,7 @@ class OpenRouterProvider implements LlmProviderInterface
         private readonly string $model = 'anthropic/claude-sonnet-4.5',
         private readonly int $maxTokens = 1024,
         private readonly string $siteUrl = '',
-        private readonly string $siteName = 'OpenMemoryAgent',
+        private readonly string $siteName = 'OpenMemory',
     ) {}
 
     public function chat(string $systemPrompt, array $messages): string

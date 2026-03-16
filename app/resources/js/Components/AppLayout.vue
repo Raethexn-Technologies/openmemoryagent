@@ -12,7 +12,7 @@
             </svg>
           </div>
           <span class="font-semibold text-gray-100 text-sm tracking-tight group-hover:text-sky-400 transition-colors">
-            OpenMemoryAgent
+            OpenMemory
           </span>
         </a>
 

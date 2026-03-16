@@ -40,7 +40,7 @@ return [
         'openrouter_api_key'  => env('OPENROUTER_API_KEY'),
         'openrouter_model'    => env('OPENROUTER_MODEL', 'anthropic/claude-sonnet-4.5'),
         'openrouter_site_url' => env('OPENROUTER_SITE_URL', ''),
-        'openrouter_site_name'=> env('OPENROUTER_SITE_NAME', 'OpenMemoryAgent'),
+        'openrouter_site_name'=> env('OPENROUTER_SITE_NAME', 'OpenMemory'),
     ],
 
     // MCP server write endpoint — shared secret for X-OMA-API-Key auth

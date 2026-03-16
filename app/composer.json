@@ -1,8 +1,8 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
-    "name": "open-memory-agent/app",
+    "name": "open-memory/app",
     "type": "project",
-    "description": "A conversational AI whose memory lives on open infrastructure instead of private servers.",
+    "description": "Portable, sovereign, AI-agnostic memory that lives on open infrastructure.",
     "keywords": ["laravel", "vue", "inertia", "icp", "ai", "memory"],
     "license": "MIT",
     "require": {

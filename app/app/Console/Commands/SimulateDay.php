@@ -52,7 +52,7 @@ class SimulateDay extends Command
         $targetMemories = max(20, min(80, (int) $this->option('memories')));
 
         $this->newLine();
-        $this->line('  <fg=cyan;options=bold>OpenMemoryAgent — Daily Simulation</>');
+        $this->line('  <fg=cyan;options=bold>OpenMemory — Daily Simulation</>');
         $this->line('  Simulating ' . $targetMemories . ' memories across an 8-hour workday.');
         $this->line('  Demo user: <fg=gray>' . $userId . '</>');
         $this->newLine();
@@ -560,7 +560,7 @@ class SimulateDay extends Command
             [
                 'type' => 'person', 'sensitivity' => 'public',
                 'label' => 'Dr. Chen is the research advisor for the Physarum work',
-                'content' => 'Dr. Chen supervises the academic side of the OpenMemoryAgent research. She has a background in complex systems and network science. Her main concern is that the Physarum dynamics are grounded in the original Tero et al. formulation, not a loose metaphor.',
+                'content' => 'Dr. Chen supervises the academic side of the OpenMemory research. She has a background in complex systems and network science. Her main concern is that the Physarum dynamics are grounded in the original Tero et al. formulation, not a loose metaphor.',
                 'tags' => ['team', 'research', 'physarum'],
                 'people' => ['Dr. Chen'], 'projects' => [],
             ],
