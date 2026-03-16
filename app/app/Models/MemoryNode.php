@@ -12,7 +12,8 @@ class MemoryNode extends Model
 
     protected $fillable = [
         'user_id', 'session_id', 'type', 'sensitivity', 'label',
-        'content', 'tags', 'confidence', 'access_count', 'last_accessed_at', 'source', 'metadata',
+        'content', 'tags', 'confidence', 'access_count', 'last_accessed_at',
+        'source', 'metadata', 'consolidated_at',
     ];
 
     protected $casts = [
@@ -21,6 +22,7 @@ class MemoryNode extends Model
         'confidence' => 'float',
         'access_count' => 'integer',
         'last_accessed_at' => 'datetime',
+        'consolidated_at' => 'datetime',
     ];
 
     public function outgoingEdges(): HasMany

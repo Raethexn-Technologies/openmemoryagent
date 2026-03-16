@@ -6,6 +6,7 @@ use App\Models\Message;
 use App\Services\GraphExtractionService;
 use App\Services\IcpMemoryService;
 use App\Services\LLM\LlmService;
+use App\Services\MemorabilityService;
 use App\Services\MemoryGraphService;
 use App\Services\MemorySummarizationService;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ class ChatController extends Controller
     public function __construct(
         private readonly LlmService $llm,
         private readonly IcpMemoryService $icp,
+        private readonly MemorabilityService $memorability,
         private readonly MemorySummarizationService $summarizer,
         private readonly GraphExtractionService $graphExtractor,
         private readonly MemoryGraphService $graphService,
@@ -147,9 +149,17 @@ class ChatController extends Controller
             'content' => $aiResponse,
         ]);
 
+        // Storage trigger: evaluate whether this turn contains a fact worth storing.
+        // MemorabilityService filters out small talk, repetition, and transient data
+        // before the summarization LLM call, preventing low-value node accumulation.
+        $memorability = $this->memorability->evaluate($validated['message'], $aiResponse, $userId);
+
         // Summarize the exchange into a durable fact with a sensitivity classification.
         // Returns ['content' => '...', 'type' => 'public'|'private'|'sensitive'] or null.
-        $memory = $this->summarizer->extract($validated['message'], $aiResponse);
+        // Skipped entirely when the memorability filter returns 'skip'.
+        $memory = $memorability['decision'] !== 'skip'
+            ? $this->summarizer->extract($validated['message'], $aiResponse)
+            : null;
         $memoryId = null;
         $metadata = json_encode(['source' => 'chat', 'provider' => $this->llm->provider()]);
 

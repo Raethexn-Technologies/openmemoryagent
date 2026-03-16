@@ -267,6 +267,7 @@ class MemoryGraphService
 
             $neighborsById = MemoryNode::where('user_id', $userId)
                 ->where('sensitivity', 'public')
+                ->whereNull('consolidated_at')
                 ->whereIn('id', $neighborIds)
                 ->get()
                 ->keyBy('id');
@@ -305,6 +306,7 @@ class MemoryGraphService
     {
         $candidates = MemoryNode::where('user_id', $userId)
             ->where('sensitivity', 'public')
+            ->whereNull('consolidated_at')
             ->latest()
             ->limit(60)
             ->get();

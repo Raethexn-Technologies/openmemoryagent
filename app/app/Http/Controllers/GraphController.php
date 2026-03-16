@@ -7,6 +7,7 @@ use App\Models\GraphSnapshot;
 use App\Models\MemoryEdge;
 use App\Models\MemoryNode;
 use App\Services\ClusterDetectionService;
+use App\Services\ConsolidationService;
 use App\Services\MemoryGraphService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ class GraphController extends Controller
     public function __construct(
         private readonly MemoryGraphService $graph,
         private readonly ClusterDetectionService $clusterDetector,
+        private readonly ConsolidationService $consolidator,
     ) {}
 
     /**
@@ -419,6 +421,103 @@ class GraphController extends Controller
             'snapshot_id' => $snapshot->id,
             'cluster_count' => count($clusters),
             'snapshot_at' => $snapshot->snapshot_at->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * Run one consolidation pass for the current user's graph.
+     *
+     * Identifies dense episodic clusters (mean internal edge weight >= 0.30,
+     * size >= 5 unconsolidated nodes) and compresses each qualifying cluster
+     * into a single semantic concept node via LLM summarization.
+     *
+     * Returns counts of clusters evaluated, clusters consolidated, episodic nodes
+     * absorbed, and concept nodes created.
+     */
+    public function consolidate(): JsonResponse
+    {
+        $userId = session('chat_user_id', 'anonymous');
+
+        $result = $this->consolidator->consolidate($userId);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Prune dormant nodes from the current user's graph.
+     *
+     * Deletes nodes where every connected edge has decayed to floor weight
+     * and the node has not been accessed in the last 90 days. Also deletes
+     * isolated nodes (no edges) older than 90 days.
+     *
+     * Returns the count of nodes and edges deleted.
+     */
+    public function prune(): JsonResponse
+    {
+        $userId = session('chat_user_id', 'anonymous');
+        $cutoff = now()->subDays(90);
+
+        $candidates = MemoryNode::where('user_id', $userId)
+            ->where(function ($q) use ($cutoff) {
+                $q->where('last_accessed_at', '<', $cutoff)
+                    ->orWhere(function ($inner) use ($cutoff) {
+                        $inner->whereNull('last_accessed_at')
+                            ->where('created_at', '<', $cutoff);
+                    });
+            })
+            ->pluck('id')
+            ->all();
+
+        if (empty($candidates)) {
+            return response()->json(['nodes_pruned' => 0, 'edges_pruned' => 0]);
+        }
+
+        // Keep nodes that still have at least one edge above floor weight.
+        $activeIds = MemoryEdge::where('user_id', $userId)
+            ->where(function ($q) use ($candidates) {
+                $q->whereIn('from_node_id', $candidates)
+                    ->orWhereIn('to_node_id', $candidates);
+            })
+            ->where('weight', '>', 0.06)
+            ->selectRaw('from_node_id as node_id')
+            ->union(
+                MemoryEdge::where('user_id', $userId)
+                    ->where(function ($q) use ($candidates) {
+                        $q->whereIn('from_node_id', $candidates)
+                            ->orWhereIn('to_node_id', $candidates);
+                    })
+                    ->where('weight', '>', 0.06)
+                    ->selectRaw('to_node_id as node_id')
+            )
+            ->pluck('node_id')
+            ->unique()
+            ->all();
+
+        $prunable = array_values(array_diff($candidates, $activeIds));
+
+        if (empty($prunable)) {
+            return response()->json(['nodes_pruned' => 0, 'edges_pruned' => 0]);
+        }
+
+        $edgesDeleted = MemoryEdge::where('user_id', $userId)
+            ->where(function ($q) use ($prunable) {
+                $q->whereIn('from_node_id', $prunable)
+                    ->orWhereIn('to_node_id', $prunable);
+            })
+            ->count();
+
+        MemoryEdge::where('user_id', $userId)
+            ->where(function ($q) use ($prunable) {
+                $q->whereIn('from_node_id', $prunable)
+                    ->orWhereIn('to_node_id', $prunable);
+            })
+            ->delete();
+
+        MemoryNode::whereIn('id', $prunable)->delete();
+
+        return response()->json([
+            'nodes_pruned' => count($prunable),
+            'edges_pruned' => $edgesDeleted,
         ]);
     }
 }

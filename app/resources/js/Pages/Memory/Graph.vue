@@ -132,6 +132,24 @@
           <div v-if="snapshotResult" class="text-xs text-slate-500 text-center">
             {{ snapshotResult.cluster_count }} cluster{{ snapshotResult.cluster_count === 1 ? '' : 's' }} saved
           </div>
+
+          <button
+            @click="runConsolidate"
+            :disabled="consolidateLoading"
+            class="w-full px-2 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded"
+          >{{ consolidateLoading ? 'Consolidating…' : 'Consolidate Clusters' }}</button>
+          <div v-if="consolidateResult" class="text-xs text-slate-500 text-center">
+            {{ consolidateResult.concept_nodes_created }} concept{{ consolidateResult.concept_nodes_created === 1 ? '' : 's' }} created
+          </div>
+
+          <button
+            @click="runPrune"
+            :disabled="pruneLoading"
+            class="w-full px-2 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded"
+          >{{ pruneLoading ? 'Pruning…' : 'Prune Dormant Nodes' }}</button>
+          <div v-if="pruneResult" class="text-xs text-slate-500 text-center">
+            {{ pruneResult.nodes_pruned }} node{{ pruneResult.nodes_pruned === 1 ? '' : 's' }} pruned
+          </div>
         </div>
       </div>
 
@@ -499,12 +517,16 @@ const SIM_SPEEDS = [
 ]
 
 // Topology panel state
-const topologyLoading  = ref(false)
-const topologyResult   = ref(null)
-const decayLoading     = ref(false)
-const decayResult      = ref(null)
-const snapshotLoading  = ref(false)
-const snapshotResult   = ref(null)
+const topologyLoading    = ref(false)
+const topologyResult     = ref(null)
+const decayLoading       = ref(false)
+const decayResult        = ref(null)
+const snapshotLoading    = ref(false)
+const snapshotResult     = ref(null)
+const consolidateLoading = ref(false)
+const consolidateResult  = ref(null)
+const pruneLoading       = ref(false)
+const pruneResult        = ref(null)
 
 // D3 internals
 let simulation = null
@@ -630,6 +652,43 @@ const runSnapshot = async () => {
     // Network error — leave result null.
   } finally {
     snapshotLoading.value = false
+  }
+}
+
+const runConsolidate = async () => {
+  consolidateLoading.value = true
+  consolidateResult.value = null
+  try {
+    const res = await fetch('/api/graph/consolidate', {
+      method: 'POST',
+      headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '' },
+    })
+    consolidateResult.value = await res.json()
+    await fetchGraph()
+  } catch {
+    // Network error — leave result null.
+  } finally {
+    consolidateLoading.value = false
+  }
+}
+
+const runPrune = async () => {
+  pruneLoading.value = true
+  pruneResult.value = null
+  try {
+    const res = await fetch('/api/graph/prune', {
+      method: 'POST',
+      headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '' },
+    })
+    pruneResult.value = await res.json()
+    await fetchGraph()
+    if (topologyResult.value) {
+      await runTopology()
+    }
+  } catch {
+    // Network error — leave result null.
+  } finally {
+    pruneLoading.value = false
   }
 }
 

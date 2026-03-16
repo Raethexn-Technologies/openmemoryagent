@@ -36,6 +36,8 @@ Route::post('/api/graph/decay', [GraphController::class, 'decay'])->name('api.gr
 Route::post('/api/graph/snapshot', [GraphController::class, 'snapshot'])->name('api.graph.snapshot');
 Route::get('/api/graph/snapshots', [GraphController::class, 'snapshotIndex'])->name('api.graph.snapshots');
 Route::get('/api/graph/snapshots/{snapshotId}', [GraphController::class, 'snapshotShow'])->name('api.graph.snapshots.show');
+Route::post('/api/graph/consolidate', [GraphController::class, 'consolidate'])->name('api.graph.consolidate');
+Route::post('/api/graph/prune', [GraphController::class, 'prune'])->name('api.graph.prune');
 
 // Three.js mission control surface
 Route::get('/3d', [GraphController::class, 'threeD'])->name('threed');
