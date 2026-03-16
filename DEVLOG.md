@@ -18,6 +18,51 @@ The log is append-only. Entries are not edited after the fact.
 
 ---
 
+## Entry 019 - 2026-03-16
+### The memory mess problem solved: storage trigger, consolidation, and pruning
+
+#### The problem being solved
+
+Without intervention, every conversation turn produces a memory node. After a year of use across Claude, Codex, Gemini CLI, and other tools, the graph accumulates thousands of episodic nodes encoding low-value turns: greetings, clarifying questions, transient status updates. The Physarum model decays edge weights on dormant connections, but nodes never delete. Two consequences follow. First, retrieval degrades: the BFS seed selection gets crowded with low-weight peripheral nodes instead of being dominated by the high-weight hubs that represent durable knowledge. Second, consolidation never occurs: episodic clusters that represent a finished project or a recurring topic stay fragmented across many individual nodes rather than compressing into a single navigable concept.
+
+Three mechanisms address this:
+
+#### Mechanism 1: Storage trigger (MemorabilityService)
+
+`MemorabilityService` intercepts the chat pipeline before `MemorySummarizationService`. The LLM evaluates the turn against four criteria: novelty (not already well-represented in existing nodes), significance (a durable user fact, not small talk), durability (relevant weeks from now), and connection richness (ties to existing nodes). The decision is one of `store_new`, `update_existing:<nodeId>`, or `skip`. On `skip`, the entire memory pipeline short-circuits: no summarization call, no graph write.
+
+The four criteria are grounded in Craik and Lockhart (1972) levels of processing (deeper processing produces more durable traces) and Tulving (1983) encoding specificity. The practical effect is that the system stores the fact that a user is building a distributed memory project, not the twelve individual turns where they asked clarifying questions while building it.
+
+The `update_existing` path handles the case where new information revises or extends an existing node rather than creating a duplicate. The LLM is given the 20 most recent node labels and content for novelty comparison. If it hallucinates a node ID that does not belong to the user, the service logs a warning and falls back to `store_new` rather than failing silently.
+
+#### Mechanism 2: Consolidation pipeline (ConsolidationService)
+
+`ConsolidationService` compresses dense episodic clusters into semantic concept nodes. The trigger conditions are: mean internal edge weight >= 0.30 (the cluster has been frequently co-activated) and cluster size >= 5 unconsolidated nodes. Below those thresholds, the cluster is too small or too weakly connected to warrant compression.
+
+For each qualifying cluster, the LLM produces a one-sentence semantic summary (maximum 30 words). A new `concept` node is created with that summary. `supersedes` edges connect the concept to all absorbed episodic nodes. The 10 highest-weight external connections from the cluster are re-wired to connect from the concept node instead, preserving the topology that the Physarum model built. Absorbed nodes receive `consolidated_at = now()` and are excluded from all subsequent retrieval and consolidation passes.
+
+This mirrors the hippocampal-to-cortical transfer described in systems consolidation theory: episodic traces that are repeatedly reactivated together are compressed into stable semantic representations. The graph stabilizes in size as new episodic nodes are consolidated into concept nodes on a rolling basis.
+
+The `POST /api/graph/consolidate` endpoint and "Consolidate Clusters" button in the graph explorer make this operation available without a terminal.
+
+#### Mechanism 3: Node pruning (PruneMemoryNodes)
+
+`PruneMemoryNodes` hard-deletes nodes where every connected edge has decayed to floor weight (<= 0.06) and the node has not been accessed in 90 days. Isolated nodes (no edges) older than 90 days are also pruned. Edges are deleted before nodes to avoid constraint violations.
+
+The 90-day idle window corresponds to approximately 1300 daily decay passes at RHO=0.97. An edge at initial weight 1.0 reaches the floor in about 100 days without any reinforcement, so a node with all edges at floor has not been meaningfully traversed for at least 100 days. The pruning window is intentionally longer than the floor-decay period to avoid deleting nodes that are weakly but genuinely connected.
+
+`POST /api/graph/prune` and a "Prune Dormant Nodes" button in the graph explorer trigger this without CLI access.
+
+#### Retrieval now filters consolidated nodes
+
+`MemoryGraphService.retrieveContext()` adds `whereNull('consolidated_at')` to both the seed selection query and the BFS neighbor query. Consolidated episodic nodes no longer compete with active nodes for context window slots. The concept node that supersedes them is active and carries the semantic content, so retrieval quality improves rather than degrades after consolidation.
+
+#### What remains open
+
+The duplicate detection in `MemorabilityService` is LLM-based text comparison against 20 recent nodes. This works for obvious duplicates but misses semantic near-duplicates that use different phrasing. Embedding-based cosine similarity against the full node set would catch more, at the cost of an embedding API call per turn. The memorability audit panel (showing each node's memorability score at storage time) and the A/B precision comparison are also open.
+
+---
+
 ## Entry 018 - 2026-03-16
 ### Positioning decisions and remaining gaps named
 

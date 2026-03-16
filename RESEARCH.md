@@ -188,7 +188,7 @@ The cognitive psychology literature on encoding and memorability provides the th
 
 That a memorability classifier producing four-criteria judgments before storage results in a graph with higher mean edge weight, lower noise, and better retrieval precision than a store-everything baseline, and that the improvement is measurable on a held-out evaluation set. The secondary finding is the identified set of event-driven trigger conditions that best predict whether a conversation turn contains durable information worth keeping.
 
-**Status: open**
+**Status: storage trigger implemented.** `MemorabilityService` runs before `MemorySummarizationService` in the chat pipeline and evaluates four criteria (novelty, significance, durability, connection richness) via a structured LLM prompt. The decision is `store_new`, `update_existing:<nodeId>`, or `skip`. The pipeline short-circuits on `skip` so no summarization or graph write occurs. Duplicate detection is LLM-based rather than cosine similarity (the more robust embedding-based approach remains open). The memorability audit panel and A/B comparison experiment are still open.
 
 ---
 
@@ -214,7 +214,7 @@ The thirty-year question sharpens this further. If the claim is that your memory
 
 That the memory graph, simulated over one year of realistic use, produces a legible intellectual biography: a small number of persistent hub nodes representing durable knowledge, a larger number of ephemeral clusters tracking completed projects, and a visible decay structure that reflects the recency weighting of the Physarum model. The secondary finding is a baseline for what the graph looks like at different time horizons, which establishes expectations for real users and identifies at what point consolidation becomes necessary.
 
-**Status: open**
+**Status: consolidation pipeline implemented.** `ConsolidationService` identifies dense episodic clusters (mean internal edge weight >= 0.30, minimum 5 unconsolidated nodes) using the existing cluster detection output, calls the LLM to produce a one-sentence semantic summary, creates a `concept` node, wires `supersedes` edges to all absorbed episodic nodes, re-wires the highest-weight external connections, and marks originals with `consolidated_at`. The `POST /api/graph/consolidate` endpoint and "Consolidate Clusters" button in the graph explorer trigger this in-browser. Node pruning (`POST /api/graph/prune`, "Prune Dormant Nodes" button) removes nodes where every edge has decayed to floor weight and the node has been idle for 90 days. The `simulate:year` command, timeline view, and consolidation visualization remain open.
 
 ---
 
