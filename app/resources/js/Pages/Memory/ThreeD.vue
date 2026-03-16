@@ -185,6 +185,9 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 const props = defineProps({
@@ -220,11 +223,14 @@ const SIM_SPEEDS = [
 
 // ── Three.js objects (module-scope, not reactive) ─────────────────────────────
 let renderer, scene, camera, controls, clock
+let composer = null      // post-processing chain (bloom)
 let instancedMesh = null
 let auraMesh = null      // glow halo layer
 let starField = null     // background star points
 let lineSegments = null
 let particleSystem = null  // traversal particles that travel along edges
+let nebulaMeshes = []    // central atmospheric layered spheres
+let ambientDust = null   // slow-drifting background particle field
 let heatSpheres = [] // {mesh, clusterId}
 let activePulses = []    // expanding wireframe rings spawned on node activation
 let particleSlots = []   // pool of reusable particle slots
@@ -384,6 +390,20 @@ function disposeScene() {
   }
   heatSpheres = []
 
+  for (const mesh of nebulaMeshes) {
+    scene?.remove(mesh)
+    mesh.geometry.dispose()
+    mesh.material.dispose()
+  }
+  nebulaMeshes = []
+
+  if (ambientDust) {
+    scene?.remove(ambientDust)
+    ambientDust.geometry.dispose()
+    ambientDust.material.dispose()
+    ambientDust = null
+  }
+
   if (starField) {
     scene?.remove(starField)
     starField.geometry.dispose()
@@ -429,6 +449,11 @@ function disposeScene() {
     instancedMesh = null
   }
 
+  if (composer) {
+    composer.dispose()
+    composer = null
+  }
+
   if (controls) {
     controls.dispose()
     controls = null
@@ -470,6 +495,19 @@ async function buildScene() {
   renderer.toneMappingExposure = 1.4
   canvasContainer.value.appendChild(renderer.domElement)
 
+  // Post-processing bloom — the visual upgrade that makes nodes and edges
+  // genuinely glow rather than just using transparent halos as a substitute.
+  const renderPass = new RenderPass(scene, camera)
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.9,   // strength  — overall bloom intensity
+    0.55,  // radius    — how far bloom spreads from each bright pixel
+    0.08,  // threshold — luminance level above which bloom kicks in
+  )
+  composer = new EffectComposer(renderer)
+  composer.addPass(renderPass)
+  composer.addPass(bloomPass)
+
   // Scene + camera
   scene = new THREE.Scene()
   scene.fog = new THREE.FogExp2(0x020817, 0.0018)
@@ -491,8 +529,19 @@ async function buildScene() {
   clock = new THREE.Clock()
 
   // ── Starfield background ──────────────────────────────────────────────────
-  const starCount = 2800
+  // Mixed-color starfield: mostly white, with cyan, violet, and amber accent
+  // stars so the backdrop feels like deep space rather than a flat dot field.
+  const starCount = 3200
   const starPos = new Float32Array(starCount * 3)
+  const starColors = new Float32Array(starCount * 3)
+  // Palette: white (frequent) + node type colors (sparse)
+  const starPalette = [
+    [1.00, 1.00, 1.00], [1.00, 1.00, 1.00], [1.00, 1.00, 1.00], [1.00, 1.00, 1.00],
+    [0.22, 0.74, 0.97], // sky-400 cyan
+    [0.65, 0.55, 0.98], // violet-400
+    [0.98, 0.75, 0.14], // amber-400
+    [0.30, 0.86, 0.50], // emerald-400
+  ]
   for (let i = 0; i < starCount; i++) {
     const r = 380 + Math.random() * 280
     const theta = Math.random() * Math.PI * 2
@@ -500,17 +549,72 @@ async function buildScene() {
     starPos[i * 3]     = r * Math.sin(phi) * Math.cos(theta)
     starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
     starPos[i * 3 + 2] = r * Math.cos(phi)
+    const col = starPalette[Math.floor(Math.random() * starPalette.length)]
+    starColors[i * 3]     = col[0]
+    starColors[i * 3 + 1] = col[1]
+    starColors[i * 3 + 2] = col[2]
   }
   const starGeo = new THREE.BufferGeometry()
   starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3))
+  starGeo.setAttribute('color',    new THREE.BufferAttribute(starColors, 3))
   starField = new THREE.Points(starGeo, new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: 0.9,
+    vertexColors: true,
+    size: 0.95,
     sizeAttenuation: true,
     transparent: true,
-    opacity: 0.65,
+    opacity: 0.70,
   }))
   scene.add(starField)
+
+  // ── Central nebula ────────────────────────────────────────────────────────
+  // Layered transparent spheres create a "glowing planet" at the graph origin.
+  // The innermost layer is brightest; outer layers fall off to a barely-visible
+  // halo. The bloom pass turns the bright core into a genuine glow.
+  // Each layer uses BackSide so the geometry is visible from outside the sphere,
+  // creating a soft volumetric-like appearance rather than a hard ball.
+  const nebulaLayers = [
+    { r: 5,  color: 0x818cf8, opacity: 0.60 }, // indigo core — bright enough to bloom
+    { r: 12, color: 0x6366f1, opacity: 0.20 }, // mid indigo atmosphere
+    { r: 24, color: 0x4338ca, opacity: 0.09 }, // outer halo
+    { r: 48, color: 0x1e1b4b, opacity: 0.04 }, // distant deep-space glow
+  ]
+  nebulaMeshes = nebulaLayers.map(({ r, color, opacity }) => {
+    const geo = new THREE.SphereGeometry(r, 32, 32)
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.BackSide,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    scene.add(mesh)
+    return mesh
+  })
+
+  // ── Ambient dust ──────────────────────────────────────────────────────────
+  // Slow-drifting particles that float through the graph space continuously,
+  // giving the scene a "living" quality even when the simulation is not running.
+  const DUST_COUNT = 280
+  const dustPos = new Float32Array(DUST_COUNT * 3)
+  for (let i = 0; i < DUST_COUNT; i++) {
+    dustPos[i * 3]     = (Math.random() - 0.5) * 160
+    dustPos[i * 3 + 1] = (Math.random() - 0.5) * 100
+    dustPos[i * 3 + 2] = (Math.random() - 0.5) * 160
+  }
+  const dustGeo = new THREE.BufferGeometry()
+  dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3))
+  ambientDust = new THREE.Points(dustGeo, new THREE.PointsMaterial({
+    color: 0x94c5ff,
+    size: 0.22,
+    transparent: true,
+    opacity: 0.35,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
+  }))
+  scene.add(ambientDust)
 
   // ── Fetch all partition data ──────────────────────────────────────────────
   const { partitions, contentMap, sharedEdges } = await fetchPartitions()
@@ -1085,12 +1189,34 @@ function updatePulses() {
 // ── Render loop ───────────────────────────────────────────────────────────────
 function animate() {
   animationFrameId = requestAnimationFrame(animate)
-  // Pause the slow orbit while the user is watching the simulation tick
+  const delta = clock ? clock.getDelta() : 0.016
+
+  // Pause auto-orbit during simulation so the user can watch traversal clearly
   if (controls) controls.autoRotate = !simRunning.value
   controls.update()
+
+  // Nebula breathes slowly — the innermost core pulses in opacity
+  if (nebulaMeshes.length > 0) {
+    const t = performance.now() * 0.0004
+    nebulaMeshes[0].material.opacity = 0.50 + Math.sin(t) * 0.12
+    nebulaMeshes[0].material.needsUpdate = true
+  }
+
+  // Ambient dust drifts — two slow counter-rotating axes give chaotic but gentle motion
+  if (ambientDust) {
+    ambientDust.rotation.y += delta * 0.018
+    ambientDust.rotation.x += delta * 0.009
+  }
+
   updateParticles()
   updatePulses()
-  renderer.render(scene, camera)
+
+  // Use the bloom composer when available, fall back to plain renderer
+  if (composer) {
+    composer.render()
+  } else {
+    renderer.render(scene, camera)
+  }
 }
 
 // ── Resize handler ────────────────────────────────────────────────────────────
@@ -1099,6 +1225,7 @@ function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(window.innerWidth, window.innerHeight)
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight)
 }
 
 function csrfHeaders() {
