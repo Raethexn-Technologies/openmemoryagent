@@ -1,4 +1,4 @@
-# OpenMemoryAgent — Development Log
+# OpenMemory — Development Log
 
 *A running record of what was discovered building this. Not polished. Not final. The honest account of what happened when the ideas met implementation.*
 
@@ -27,7 +27,7 @@ The MCP server could read memories but had no write path. CLI tools running in t
 
 #### The solution
 
-A portable Ed25519 identity file at `~/.config/openmemorymcp/identity.json`. One key generated once, shared across all CLI tools through the MCP server. The MCP server loads it at startup and signs canister calls with it. All tools using the same MCP server instance carry the same principal, so memories accumulate under one identity regardless of which tool generated them.
+A portable Ed25519 identity file at `~/.config/openmemory/identity.json`. One key generated once, shared across all CLI tools through the MCP server. The MCP server loads it at startup and signs canister calls with it. All tools using the same MCP server instance carry the same principal, so memories accumulate under one identity regardless of which tool generated them.
 
 #### What was built
 
@@ -156,7 +156,7 @@ Section 7 also received a new subsection explaining how to run the topology meas
 
 **VISION.md** received two new sections. "Known Limitations and Open Measurements" states eight properties of the current implementation that an evaluator should know: the discrete Physarum approximation is not formally verified against the continuous model, ALPHA and RHO were chosen by inspection rather than calibrated empirically, the scale-free claim is a hypothesis not a measurement, no A/B experiment confirms retrieval quality improvement, Physarum weights track access frequency not causal influence, the graph layer carries no cryptographic ownership, localStorage key custody is vulnerable to script injection, and LLM classification is non-deterministic and uncorrectable. Stating these is not hedging. It is the standard practice in systems research: known limitations precisely stated are evidence of rigorous self-evaluation, not weakness. "Prior Work and Positioning" places the project relative to MemGPT, A-MEM, GraphRAG, and Kinic's zkTAM work, with a summary of the architectural combination that none of the prior systems individually implement.
 
-**RESEARCH.md** received two citation additions. Track 6 (the storage trigger) now references Craik and Lockhart (1972) "Levels of Processing" (Journal of Verbal Learning and Verbal Behavior, 11(6), 671-684, doi:10.1016/S0022-5371(72)80001-X) and Tulving (1983) "Elements of Episodic Memory" as the cognitive psychology grounding for the four memorability criteria. The criteria (novelty, significance, durability, connection richness) map to depth-of-processing dimensions and encoding specificity respectively. Track 9 (cognitive subsystem) now references ACT-R (Anderson et al., 2004, Psychological Review, 111(4), 1036-1060, doi:10.1037/0033-295X.111.4.1036), Soar (Laird, Newell and Rosenbloom, 1987, Artificial Intelligence, 33(1), 1-64, doi:10.1016/0004-3702(87)90050-6), and Global Workspace Theory (Baars, 1988, Cambridge University Press), placing OpenMemoryAgent in relation to forty years of cognitive architecture research. Track 1 status was updated to reflect that the degree distribution endpoint is now implemented.
+**RESEARCH.md** received two citation additions. Track 6 (the storage trigger) now references Craik and Lockhart (1972) "Levels of Processing" (Journal of Verbal Learning and Verbal Behavior, 11(6), 671-684, doi:10.1016/S0022-5371(72)80001-X) and Tulving (1983) "Elements of Episodic Memory" as the cognitive psychology grounding for the four memorability criteria. The criteria (novelty, significance, durability, connection richness) map to depth-of-processing dimensions and encoding specificity respectively. Track 9 (cognitive subsystem) now references ACT-R (Anderson et al., 2004, Psychological Review, 111(4), 1036-1060, doi:10.1037/0033-295X.111.4.1036), Soar (Laird, Newell and Rosenbloom, 1987, Artificial Intelligence, 33(1), 1-64, doi:10.1016/0004-3702(87)90050-6), and Global Workspace Theory (Baars, 1988, Cambridge University Press), placing OpenMemory in relation to forty years of cognitive architecture research. Track 1 status was updated to reflect that the degree distribution endpoint is now implemented.
 
 #### The topology endpoint: Track 1 moves from open to measurable
 
@@ -221,7 +221,7 @@ The correct read of the infrastructure is that ICP is doing exactly the job it i
 
 #### What this resolved
 
-The sovereignty model for OpenMemoryAgent can now be stated without hedging. ICP guarantees write authority (no server can write under the user's principal) and private read authority (private and sensitive records are gated by `msg.caller` regardless of application code). It does not guarantee that authorized readers of public records use that content in ways the user would approve. That gap is real, documented, and has three research directions pointing at it. The project is honest about the boundary rather than claiming guarantees it does not have.
+The sovereignty model for OpenMemory can now be stated without hedging. ICP guarantees write authority (no server can write under the user's principal) and private read authority (private and sensitive records are gated by `msg.caller` regardless of application code). It does not guarantee that authorized readers of public records use that content in ways the user would approve. That gap is real, documented, and has three research directions pointing at it. The project is honest about the boundary rather than claiming guarantees it does not have.
 
 The VISION.md section "What Sovereignty Does and Does Not Guarantee" captures the stable version of these findings. This entry is the working record of how those conclusions were reached.
 
@@ -254,7 +254,7 @@ This suggests a future visualization mode where particles are emitted continuous
 
 #### The cognitive architecture question
 
-A framing question raised during this session: could OpenMemoryAgent become the memory department of a larger encompassing AI system rather than a standalone application?
+A framing question raised during this session: could OpenMemory become the memory department of a larger encompassing AI system rather than a standalone application?
 
 The answer is yes, and the current architecture already implements the required interfaces. The MCP server is the synaptic protocol between the memory layer and any external reasoning layer. The Physarum dynamics are the plasticity mechanism that adjusts connection strengths based on use. The trust scoring system is the access control model that governs which reasoning systems can read from and write to the memory substrate.
 
@@ -271,9 +271,9 @@ The significance of the framing is that it changes the scope of the project's co
 
 #### What prompted this
 
-A product framing question: what is OpenMemoryAgent actually for, and what problem does it solve that no current AI product addresses? The answer that emerged from working through the architecture, the Physarum model, the ICP ownership layer, and the multi-agent society dynamics is precise enough to state without hedging.
+A product framing question: what is OpenMemory actually for, and what problem does it solve that no current AI product addresses? The answer that emerged from working through the architecture, the Physarum model, the ICP ownership layer, and the multi-agent society dynamics is precise enough to state without hedging.
 
-OpenMemoryAgent is portable, sovereign, AI-agnostic long-term memory. You own it. You carry it. Every AI you work with plugs into the same memory graph via MCP. When the conversation ends, what you learned goes back in. The next AI you open already knows who you are.
+OpenMemory is portable, sovereign, AI-agnostic long-term memory. You own it. You carry it. Every AI you work with plugs into the same memory graph via MCP. When the conversation ends, what you learned goes back in. The next AI you open already knows who you are.
 
 This is not a feature of a specific AI assistant. It is infrastructure for the way AI use actually works: people move between models, switch providers, use specialized agents for different tasks, and start fresh conversations constantly. The context loss at every boundary is not a preference; it is a structural consequence of memory being stored inside the vendor's product rather than inside infrastructure the user controls.
 

@@ -1,6 +1,6 @@
-# Contributing to OpenMemoryAgent
+# Contributing to OpenMemory
 
-OpenMemoryAgent is a research project maintained by Raethexn Technologies. The codebase is intentionally narrow in scope, and contributions that improve correctness, clarity, or the local development experience are welcome.
+OpenMemory is a research project maintained by Raethexn Technologies. The codebase is intentionally narrow in scope, and contributions that improve correctness, clarity, or the local development experience are welcome.
 
 ---
 

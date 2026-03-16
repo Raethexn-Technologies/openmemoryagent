@@ -1,4 +1,4 @@
-# The Science Behind OpenMemoryAgent
+# The Science Behind OpenMemory
 
 This document explains the mathematical models and biological principles that
 the memory graph implements, in plain terms. No prior background in biology,

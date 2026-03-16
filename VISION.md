@@ -1,8 +1,8 @@
-# OpenMemoryAgent: Research Vision
+# OpenMemory: Research Vision
 
 *What does user-sovereign AI memory actually look like when you try to build it?*
 
-This document is the research record for OpenMemoryAgent. It is not a setup guide (see README.md) and not a feature list. It captures the design questions driving the project, what was actually learned building it, what the implementation honestly proves, and where the hard problems remain.
+This document is the research record for OpenMemory. It is not a setup guide (see README.md) and not a feature list. It captures the design questions driving the project, what was actually learned building it, what the implementation honestly proves, and where the hard problems remain.
 
 For the running implementation log (what was discovered building specific features, security findings, and what remains unresolved) see [DEVLOG.md](./DEVLOG.md). For the active research agenda (open scientific claims, what needs to be built to test each one, and how tracks evolve) see [RESEARCH.md](./RESEARCH.md). VISION.md is the stable research position; DEVLOG.md is the honest record of how it got there; RESEARCH.md is the living frontier.
 
@@ -48,7 +48,7 @@ These constraints define the design space this project is working in.
 
 ## What Was Built
 
-OpenMemoryAgent is a working prototype of one concrete answer to the above questions. The stack is intentionally conventional (Laravel, Vue, Tailwind) so the novel parts are clearly isolated.
+OpenMemory is a working prototype of one concrete answer to the above questions. The stack is intentionally conventional (Laravel, Vue, Tailwind) so the novel parts are clearly isolated.
 
 ### What's different
 
@@ -200,7 +200,7 @@ Four systems define the landscape that this project sits within. The distinction
 
 **GraphRAG** (Edge et al., 2024, arXiv:2404.16130) extracts entities and relationships from a document corpus and builds a knowledge graph for retrieval. Retrieval traverses the graph rather than scoring flat chunks. This is a meaningful improvement over flat RAG for document-dense tasks. GraphRAG's graph is static after construction: it reflects document semantic structure at build time and does not evolve through retrieval events. It is also built over a document corpus the operator provides, not over the agent's own conversation and memory history.
 
-**Kinic and zkTAM** (2025) demonstrated a zero-knowledge proof system that attests which specific memory records were used when generating a response, closing the observability gap that `active_node_ids` identifies but cannot prove. The zkTAM approach is referenced in the "What This Does Not Prove" section above as the intended next step after retrieval observability is established. OpenMemoryAgent's `active_node_ids` field is the precondition that zkTAM requires.
+**Kinic and zkTAM** (2025) demonstrated a zero-knowledge proof system that attests which specific memory records were used when generating a response, closing the observability gap that `active_node_ids` identifies but cannot prove. The zkTAM approach is referenced in the "What This Does Not Prove" section above as the intended next step after retrieval observability is established. OpenMemory's `active_node_ids` field is the precondition that zkTAM requires.
 
 **The combination this project builds.** Graph-structured memory where edge weights evolve through the agent's retrieval behavior; user-cryptographic ownership of source records enforced at the protocol level by `msg.caller` on an ICP canister; a standard MCP interface through which any compliant external agent connects; and trust-weighted collective Physarum dynamics across multiple agents with MemoryGraft resistance. No single paper in the literature identified during this project's research phase combines all four of these properties. The individual components each have precedents. Their combination is the contribution.
 
@@ -396,7 +396,7 @@ See DEVLOG Entry 007 for the full research landscape analysis and the specific p
 
 ## Portable Sovereign Memory as Infrastructure
 
-The framing that clarifies everything else: OpenMemoryAgent is not an AI feature. It is a memory layer you own and carry, and any AI that speaks the protocol can plug into it.
+The framing that clarifies everything else: OpenMemory is not an AI feature. It is a memory layer you own and carry, and any AI that speaks the protocol can plug into it.
 
 The current AI memory landscape produces a specific kind of dependency. Your conversation history, preferences, inferred personality, and accumulated context live in the vendor's infrastructure. When you open a new chat with a different model, you start over. When you cancel a subscription, your memory stays behind. When the company changes its data retention policy, the policy applies to your memories whether you agreed or not.
 
@@ -438,7 +438,7 @@ The ICP canister guarantees that no unauthorized party wrote your memory records
 
 ---
 
-## OpenMemoryAgent as a Cognitive Subsystem
+## OpenMemory as a Cognitive Subsystem
 
 The project started as a question about memory ownership. The question it is now positioned to answer is larger: what does a modular, open cognitive architecture look like when the memory layer is infrastructure rather than a feature?
 
@@ -446,7 +446,7 @@ Every sufficiently capable cognitive system requires at minimum three functional
 
 The current AI landscape implements all three components inside a single vendor's product. The reasoning layer (the model), the perception layer (the context window and retrieval system), and the memory layer (the conversation history and any fine-tuning) are bundled together and owned by the same company. This bundling produces capable products, but it makes the memory layer non-portable and non-interoperable.
 
-OpenMemoryAgent is the memory subsystem extracted and made sovereign. The MCP protocol is the synaptic interface through which any external reasoning layer (any LLM) connects to the memory layer. The Physarum dynamics are the mechanism by which connection weights adjust based on use, performing the same function that synaptic plasticity serves in biological neural circuits. The trust scoring system is the authorization model that controls which reasoning systems can read from and write to the memory substrate.
+OpenMemory is the memory subsystem extracted and made sovereign. The MCP protocol is the synaptic interface through which any external reasoning layer (any LLM) connects to the memory layer. The Physarum dynamics are the mechanism by which connection weights adjust based on use, performing the same function that synaptic plasticity serves in biological neural circuits. The trust scoring system is the authorization model that controls which reasoning systems can read from and write to the memory substrate.
 
 A system built on this model would assign each major cognitive function to a specialized component with a well-defined interface. A perception agent reads documents, images, or other inputs and writes structured observations to the memory graph. A reasoning agent runs inference against retrieved memory context and produces responses. A planning agent maintains goal state and monitors whether the reasoning outputs are moving toward it. A consolidation agent runs periodically to compress episodic memory into semantic nodes, implementing the hippocampal-to-cortical transfer that biological memory systems perform during sleep.
 
@@ -522,4 +522,4 @@ This is Track 6 in the research agenda, and it is the problem that separates a u
 
 ---
 
-*This document was written to preserve the research thinking behind OpenMemoryAgent. The implementation will change; the questions it's asking are the part worth keeping.*
+*This document was written to preserve the research thinking behind OpenMemory. The implementation will change; the questions it's asking are the part worth keeping.*

@@ -1,10 +1,10 @@
-# OpenMemoryAgent
+# OpenMemory
 
 Built because working across Claude, Codex, Gemini CLI, and other AI tools means re-explaining project context from scratch every time you switch. Each AI starts fresh at every session boundary. This is the memory layer that lives outside any single AI so all of them stay in sync.
 
 The MCP server at `icp/mcp-server/server.js` is the protocol endpoint through which any MCP-compatible AI reads and writes memory records. Configure it once, and every AI you connect to it already knows what you have been working on. The chat interface in this repository is the reference implementation demonstrating that the infrastructure works end-to-end.
 
-Identity works differently depending on the tool. The browser chat UI holds an Ed25519 key in localStorage and signs writes directly to the ICP canister. CLI tools running in terminals (Claude Code, Gemini, Codex) share a portable identity file at `~/.config/openmemorymcp/identity.json`, generated once with `node setup-identity.js`, and write through the MCP server rather than through a browser. A typed memory graph sits in PostgreSQL alongside the canister records, tracking relationships between memories and applying Physarum conductance dynamics that shift edge weights based on how the LLM actually uses each connection over time.
+Identity works differently depending on the tool. The browser chat UI holds an Ed25519 key in localStorage and signs writes directly to the ICP canister. CLI tools running in terminals (Claude Code, Gemini, Codex) share a portable identity file at `~/.config/openmemory/identity.json`, generated once with `node setup-identity.js`, and write through the MCP server rather than through a browser. A typed memory graph sits in PostgreSQL alongside the canister records, tracking relationships between memories and applying Physarum conductance dynamics that shift edge weights based on how the LLM actually uses each connection over time.
 
 [VISION.md](./VISION.md) covers the design decisions and research questions in depth. [DEVLOG.md](./DEVLOG.md) is the running record of what was discovered building it: implementation findings, security fixes, architectural tensions, and what remains unresolved. [RESEARCH.md](./RESEARCH.md) is the active research agenda: the open scientific claims, what needs to be built to test each one, and how the tracks evolve as discoveries open new questions. [SCIENCE.md](./SCIENCE.md) explains the mathematics and biology behind the graph layer in plain terms, with source citations and references to the tests that verify each formula.
 
@@ -266,7 +266,7 @@ The test suite runs against SQLite in-memory and mock mode throughout. No API ke
 ## Project structure
 
 ```
-OpenMemoryAgent/
+OpenMemory/
 ├── app/                          # Laravel application
 │   ├── app/
 │   │   ├── Console/Commands/
@@ -328,7 +328,7 @@ OpenMemoryAgent/
 │   │   └── server.js                        # read-only adapter in live mode; mock store in mock mode
 │   ├── mcp-server/
 │   │   ├── server.js                        # MCP protocol endpoint; any MCP-compatible AI connects here
-│   │   ├── identity.js                      # loads portable Ed25519 identity from ~/.config/openmemorymcp/
+│   │   ├── identity.js                      # loads portable Ed25519 identity from ~/.config/openmemory/
 │   │   └── setup-identity.js                # one-time identity generation script
 │   └── dfx.json
 ├── docker/
